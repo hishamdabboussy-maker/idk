@@ -1,0 +1,1969 @@
+//@version=5
+indicator("SMC Full Suite v12", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETTINGS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpOB = "🟦 Order Blocks"
+showOB      = input.bool(true,  "Show Order Blocks",           group=grpOB)
+obLookback  = input.int(10,     "Swing Lookback",               group=grpOB, minval=3, maxval=50)
+obMaxBoxes  = input.int(3,      "Max OBs on Screen",            group=grpOB, minval=1, maxval=10)
+obHideMitig = input.bool(true,  "Hide Mitigated OBs",           group=grpOB)
+obMitigMode = input.string("Close", "Mitigation by",           group=grpOB, options=["Wick","Close"])
+obBullColor = input.color(color.new(#2962FF, 72), "Bull OB",   group=grpOB)
+obBearColor = input.color(color.new(#F23645, 72), "Bear OB",   group=grpOB)
+
+grpRB = "🟣 Rejection Blocks"
+showRB      = input.bool(true,  "Show Rejection Blocks",        group=grpRB)
+rbWickRatio = input.float(0.6,  "Min Wick/Range Ratio",         group=grpRB, minval=0.3, maxval=0.9, step=0.05)
+rbMaxBoxes  = input.int(3,      "Max RBs on Screen",            group=grpRB, minval=1, maxval=10)
+rbHideMitig = input.bool(true,  "Hide Mitigated RBs",           group=grpRB)
+rbBullColor = input.color(color.new(#00BCD4, 72), "Bull RB",   group=grpRB)
+rbBearColor = input.color(color.new(#FF6D00, 72), "Bear RB",   group=grpRB)
+
+grpBB = "🔴 Breaker Blocks"
+showBB      = input.bool(true,  "Show Breaker Blocks",          group=grpBB)
+bbMaxBoxes  = input.int(3,      "Max BBs on Screen",            group=grpBB, minval=1, maxval=10)
+bbBullColor = input.color(color.new(#26A69A, 72), "Bull BB",   group=grpBB)
+bbBearColor = input.color(color.new(#EF5350, 72), "Bear BB",   group=grpBB)
+
+grpFVG = "🟩 Fair Value Gaps"
+showFVG     = input.bool(true,  "Show FVGs",                    group=grpFVG)
+fvgMinSize  = input.float(0.03, "Min Gap % (0=any)",            group=grpFVG, minval=0.0, maxval=5.0, step=0.01)
+fvgMaxBoxes = input.int(3,      "Max FVGs on Screen",           group=grpFVG, minval=1, maxval=10)
+fvgBullColor= input.color(color.new(#00C853, 78), "Bull FVG",  group=grpFVG)
+fvgBearColor= input.color(color.new(#FF1744, 78), "Bear FVG",  group=grpFVG)
+showFVGMid  = input.bool(true,  "Show Midline",                 group=grpFVG)
+
+grpIFVG = "🟧 Inverse FVGs"
+showIFVG     = input.bool(true,  "Show IFVGs",                  group=grpIFVG)
+ifvgStrict   = input.bool(true,  "Require Close Inside Gap",    group=grpIFVG)
+ifvgMaxBoxes = input.int(3,      "Max IFVGs on Screen",         group=grpIFVG, minval=1, maxval=10)
+ifvgBullColor= input.color(color.new(#FF6D00, 78), "Bull IFVG",group=grpIFVG)
+ifvgBearColor= input.color(color.new(#AA00FF, 78), "Bear IFVG",group=grpIFVG)
+
+grpSIG = "📊 Signals"
+showExit    = input.bool(true,  "Show Exit Signals",            group=grpSIG)
+sigMode     = input.string("OB + RB", "Signal Source",         group=grpSIG, options=["OB Only","RB Only","OB + RB","All Blocks"])
+sweepFilter = input.bool(true,  "Require Sweep Candle",         group=grpSIG)
+sweepRatio  = input.float(0.55, "Sweep Wick Ratio",             group=grpSIG, minval=0.3, maxval=0.9, step=0.05)
+sigOffset   = input.int(2,      "Label Offset",                 group=grpSIG, minval=1, maxval=10)
+minQualityPct = input.int(40,   "Min Signal Quality % (filter)", group=grpSIG, minval=0,  maxval=100, step=5)
+
+grpHTF = "🔷 HTF Order Blocks (4H)"
+showHTF     = input.bool(true,  "Show 4H OBs",                  group=grpHTF)
+htfMaxBoxes = input.int(2,      "Max HTF OBs per side",         group=grpHTF, minval=1, maxval=5)
+htfBullColor= input.color(color.new(#1565C0, 55), "HTF Bull OB",group=grpHTF)
+htfBearColor= input.color(color.new(#B71C1C, 55), "HTF Bear OB",group=grpHTF)
+
+grpHTFFVG = "🟫 HTF Fair Value Gap (4H)"
+showHTFFVG  = input.bool(true,  "Use 4H FVG as confluence",     group=grpHTFFVG)
+
+grpMSS = "🔀 Market Structure Shift"
+showMSS     = input.bool(true,  "Show MSS",                     group=grpMSS)
+mssLookback = input.int(10,     "MSS Lookback",                 group=grpMSS, minval=3, maxval=50)
+mssBullColor= input.color(color.new(#00E676, 40), "Bull MSS",   group=grpMSS)
+mssBearColor= input.color(color.new(#FF1744, 40), "Bear MSS",   group=grpMSS)
+
+grpCHOCH = "🔁 Change of Character (CHoCH)"
+showCHoCH      = input.bool(true, "Detect CHoCH",               group=grpCHOCH)
+chochLookback  = input.int(15,    "CHoCH Lookback",             group=grpCHOCH, minval=5, maxval=80)
+chochBullColor = input.color(color.new(#00B0FF, 40), "Bull CHoCH", group=grpCHOCH)
+chochBearColor = input.color(color.new(#FF4081, 40), "Bear CHoCH", group=grpCHOCH)
+
+grpPD = "🟩 Premium / Discount Zones"
+showPD      = input.bool(true,  "Show Premium/Discount",        group=grpPD)
+pdLookback  = input.int(50,     "Range Lookback",               group=grpPD, minval=10, maxval=200)
+pdZoneSize  = input.float(0.25, "Zone Size (% of range)",       group=grpPD, minval=0.1, maxval=0.4, step=0.05)
+pdBullColor = input.color(color.new(#00C853, 93), "Discount Zone", group=grpPD)
+pdBearColor = input.color(color.new(#F23645, 93), "Premium Zone",  group=grpPD)
+
+grpLIQ = "💧 Liquidity Levels"
+showLIQ      = input.bool(true,  "Show Liquidity Lines",         group=grpLIQ)
+liqLookback  = input.int(10,   "Swing Lookback",              group=grpLIQ, minval=3,    maxval=50)
+liqTolerance = input.float(0.1,"Equal Level Tolerance (%)",   group=grpLIQ, minval=0.01, maxval=1.0, step=0.01)
+liqMaxLines  = input.int(5,    "Max Levels on Screen",        group=grpLIQ, minval=1,    maxval=20)
+liqEQHColor  = input.color(color.new(#FF5252, 60), "EQH Color", group=grpLIQ)
+liqEQLColor  = input.color(color.new(#69F0AE, 60), "EQL Color", group=grpLIQ)
+liqSweptHide = input.bool(true, "Hide When Swept",             group=grpLIQ)
+sweepWindow  = input.int(20,   "Recent Sweep Window (bars)",  group=grpLIQ, minval=3, maxval=100)
+
+grpVOL = "📊 Volume Filter"
+volFilterOn = input.bool(true,  "Require Volume Confirmation",  group=grpVOL)
+volLength   = input.int(20,     "Average Length",               group=grpVOL, minval=5,   maxval=100)
+volMult     = input.float(1.2,  "Min Volume Multiplier",        group=grpVOL, minval=1.0, maxval=5.0, step=0.1)
+
+grpVP = "📊 Volume Profile"
+showVP      = input.bool(true,  "Show Volume Profile",          group=grpVP)
+vpLookback  = input.int(200,    "Lookback Bars",                group=grpVP, minval=50,  maxval=500)
+vpRows      = input.int(30,     "Number of Rows",               group=grpVP, minval=10,  maxval=50)
+vpWidth     = input.int(30,     "Bar Width (% of chart)",       group=grpVP, minval=5,   maxval=50)
+vpBullColor = input.color(color.new(#26A69A, 40), "Bull VP",   group=grpVP)
+vpBearColor = input.color(color.new(#EF5350, 40), "Bear VP",   group=grpVP)
+vpPOCColor  = input.color(color.new(#FFEB3B, 0),  "POC Line",  group=grpVP)
+showPOC     = input.bool(true,  "Show POC Line",                group=grpVP)
+showVAH     = input.bool(true,  "Show Value Area High/Low",     group=grpVP)
+
+grpRSI = "📈 RSI"
+useRSI       = input.bool(true,  "Use RSI in confluence",        group=grpRSI)
+rsiLength    = input.int(14,     "RSI Length",                   group=grpRSI, minval=2,  maxval=50)
+rsiOB        = input.int(70,     "Overbought Level",             group=grpRSI, minval=50, maxval=95)
+rsiOS        = input.int(30,     "Oversold Level",               group=grpRSI, minval=5,  maxval=50)
+rsiDivLB     = input.int(5,      "Divergence Lookback",          group=grpRSI, minval=2,  maxval=20)
+
+grpADX = "📐 ADX (Trend Strength)"
+useADX       = input.bool(true,  "Use ADX in confluence",        group=grpADX)
+adxLength    = input.int(14,     "ADX Length",                   group=grpADX, minval=2,  maxval=50)
+adxThreshold = input.int(20,     "Trending Threshold",           group=grpADX, minval=10, maxval=50)
+
+grpATR = "📊 Volatility (ATR)"
+useATR       = input.bool(true,  "Show Volatility on Dashboard", group=grpATR)
+atrLength    = input.int(14,     "ATR Length",                   group=grpATR, minval=2,  maxval=50)
+atrAvgLen    = input.int(50,     "ATR Average Length",           group=grpATR, minval=10, maxval=200)
+atrHighMult  = input.float(1.3,  "High Vol Multiplier",          group=grpATR, minval=1.0, maxval=3.0, step=0.05)
+atrLowMult   = input.float(0.7,  "Low Vol Multiplier",           group=grpATR, minval=0.3, maxval=1.0, step=0.05)
+
+grpSESS = "🕒 Sessions / Killzones"
+useSession   = input.bool(true,  "Use Session in confluence",    group=grpSESS)
+asiaSess     = input.session("0000-0800", "Asian Session (UTC)", group=grpSESS)
+londonSess   = input.session("0700-1100", "London Killzone (UTC)", group=grpSESS)
+nySess       = input.session("1230-1600", "NY Killzone (UTC)",   group=grpSESS)
+
+grpProx = "📡 Proximity Filter"
+proxEnable  = input.bool(true,  "Hide Distant Blocks",          group=grpProx)
+proxPct     = input.float(2.0,  "Max Distance from Price (%)",  group=grpProx, minval=0.1, maxval=20.0, step=0.1)
+
+grpDisp = "⚙️ Display"
+extendBoxes = input.bool(true,  "Extend Boxes to Right",        group=grpDisp)
+showLabels  = input.bool(true,  "Show Zone Labels",             group=grpDisp)
+showDash    = input.bool(true,  "Show Market Condition Dashboard", group=grpDisp)
+dashPos     = input.string("top_right", "Dashboard Position",   group=grpDisp, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+extRight    = extendBoxes ? extend.right : extend.none
+candleRange = high - low
+bodyHigh    = math.max(open, close)
+bodyLow     = math.min(open, close)
+upperWick   = high - bodyHigh
+lowerWick   = bodyLow - low
+ALPHA_INVIS = 100
+
+zoneNear(zH, zL, forceShow) =>
+    if not proxEnable or forceShow
+        true
+    else
+        midZ = math.avg(zH, zL)
+        dist = math.abs(close - midZ) / close * 100.0
+        dist <= proxPct
+
+bullBodyIn(zH, zL) =>
+    bLo = math.min(open, close)
+    close > open and bLo <= zH and bLo >= zL
+
+bearBodyIn(zH, zL) =>
+    high >= zL and close < open and close < zH
+
+isBullSweep() =>
+    candleRange > 0 and (lowerWick / candleRange >= sweepRatio) and close > open
+
+isBearSweep() =>
+    candleRange > 0 and close < open and high >= (bodyHigh * (1.0 - sweepRatio * 0.5))
+
+zonesOverlap(aH, aL, bH, bL) =>
+    aH >= bL and aL <= bH
+
+dashPosition() =>
+    switch dashPos
+        "top_right"     => position.top_right
+        "top_left"      => position.top_left
+        "middle_right"  => position.middle_right
+        "middle_left"   => position.middle_left
+        "bottom_right"  => position.bottom_right
+        "bottom_left"   => position.bottom_left
+        => position.top_right
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STRUCTURE
+// ══════════════════════════════════════════════════════════════════════════════
+
+ph = ta.pivothigh(high, obLookback, obLookback)
+pl = ta.pivotlow(low,   obLookback, obLookback)
+
+var float lastPH = na
+var float lastPL = na
+
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+
+bullBOS = not na(lastPH) and close > lastPH and close[1] <= lastPH
+bearBOS = not na(lastPL) and close < lastPL and close[1] >= lastPL
+
+if bullBOS
+    lastPH := na
+if bearBOS
+    lastPL := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF ORDER BLOCKS  (4H)
+// ══════════════════════════════════════════════════════════════════════════════
+
+HTF = "240"
+
+[htfHigh, htfLow, htfClose, htfOpen] = request.security(syminfo.tickerid, HTF,
+     [high, low, close, open], lookahead=barmerge.lookahead_off)
+
+htfPH = request.security(syminfo.tickerid, HTF,
+     ta.pivothigh(high, obLookback, obLookback), lookahead=barmerge.lookahead_off)
+htfPL = request.security(syminfo.tickerid, HTF,
+     ta.pivotlow(low, obLookback, obLookback),   lookahead=barmerge.lookahead_off)
+
+var float htfLastPH = na
+var float htfLastPL = na
+
+if not na(htfPH)
+    htfLastPH := htfPH
+if not na(htfPL)
+    htfLastPL := htfPL
+
+htfBullBOS = not na(htfLastPH) and htfClose > htfLastPH and htfClose[1] <= htfLastPH
+htfBearBOS = not na(htfLastPL) and htfClose < htfLastPL and htfClose[1] >= htfLastPL
+
+if htfBullBOS
+    htfLastPH := na
+if htfBearBOS
+    htfLastPL := na
+
+var htfBullBoxes = array.new_box()
+var htfBullHi    = array.new_float()
+var htfBullLo    = array.new_float()
+var htfBullMitig = array.new_bool()
+
+var htfBearBoxes = array.new_box()
+var htfBearHi    = array.new_float()
+var htfBearLo    = array.new_float()
+var htfBearMitig = array.new_bool()
+
+chartBelowHTF = timeframe.in_seconds() < timeframe.in_seconds(HTF)
+
+if showHTF and chartBelowHTF and htfBullBOS
+    htfObIdx = 1
+    for k = 1 to math.min(obLookback * 2, 100)
+        if htfClose[k] < htfOpen[k]
+            htfObIdx := k
+            break
+    oH = htfHigh[htfObIdx]
+    oL = htfLow[htfObIdx]
+    while array.size(htfBullBoxes) >= htfMaxBoxes
+        box.delete(array.shift(htfBullBoxes))
+        array.shift(htfBullHi)
+        array.shift(htfBullLo)
+        array.shift(htfBullMitig)
+    b = box.new(bar_index - htfObIdx, oH, bar_index, oL,
+         bgcolor=htfBullColor, border_color=color.new(#1565C0, 20),
+         border_width=2, extend=extend.right)
+    array.push(htfBullBoxes, b)
+    array.push(htfBullHi,    oH)
+    array.push(htfBullLo,    oL)
+    array.push(htfBullMitig, false)
+    if showLabels
+        label.new(bar_index, oH, "4H OB", style=label.style_label_down,
+             color=color.new(#1565C0, 40), textcolor=color.white, size=size.tiny)
+
+if showHTF and chartBelowHTF and htfBearBOS
+    htfObIdx = 1
+    for k = 1 to math.min(obLookback * 2, 100)
+        if htfClose[k] > htfOpen[k]
+            htfObIdx := k
+            break
+    oH = htfHigh[htfObIdx]
+    oL = htfLow[htfObIdx]
+    while array.size(htfBearBoxes) >= htfMaxBoxes
+        box.delete(array.shift(htfBearBoxes))
+        array.shift(htfBearHi)
+        array.shift(htfBearLo)
+        array.shift(htfBearMitig)
+    b = box.new(bar_index - htfObIdx, oH, bar_index, oL,
+         bgcolor=htfBearColor, border_color=color.new(#B71C1C, 20),
+         border_width=2, extend=extend.right)
+    array.push(htfBearBoxes, b)
+    array.push(htfBearHi,    oH)
+    array.push(htfBearLo,    oL)
+    array.push(htfBearMitig, false)
+    if showLabels
+        label.new(bar_index, oL, "4H OB", style=label.style_label_up,
+             color=color.new(#B71C1C, 40), textcolor=color.white, size=size.tiny)
+
+if showHTF and chartBelowHTF
+    if array.size(htfBullBoxes) > 0
+        for i = 0 to array.size(htfBullBoxes) - 1
+            if not array.get(htfBullMitig, i)
+                if close < array.get(htfBullLo, i)
+                    box.delete(array.get(htfBullBoxes, i))
+                    array.set(htfBullMitig, i, true)
+    if array.size(htfBearBoxes) > 0
+        for i = 0 to array.size(htfBearBoxes) - 1
+            if not array.get(htfBearMitig, i)
+                if close > array.get(htfBearHi, i)
+                    box.delete(array.get(htfBearBoxes, i))
+                    array.set(htfBearMitig, i, true)
+
+inHTFBullOB = false
+inHTFBearOB = false
+
+if showHTF and chartBelowHTF
+    if array.size(htfBullBoxes) > 0
+        for i = 0 to array.size(htfBullBoxes) - 1
+            if not array.get(htfBullMitig, i)
+                if close >= array.get(htfBullLo, i) and close <= array.get(htfBullHi, i)
+                    inHTFBullOB := true
+                    break
+    if array.size(htfBearBoxes) > 0
+        for i = 0 to array.size(htfBearBoxes) - 1
+            if not array.get(htfBearMitig, i)
+                if close >= array.get(htfBearLo, i) and close <= array.get(htfBearHi, i)
+                    inHTFBearOB := true
+                    break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF FVG (4H)
+// ══════════════════════════════════════════════════════════════════════════════
+
+[htfH2, htfL2, htfH0, htfL0] = request.security(syminfo.tickerid, HTF,
+     [high[2], low[2], high, low], lookahead=barmerge.lookahead_off)
+
+htfBullFVG = (htfL0 - htfH2) > 0
+htfBearFVG = (htfL2 - htfH0) > 0
+
+inHTFBullFVG = showHTFFVG and htfBullFVG and close >= htfH2 and close <= htfL0
+inHTFBearFVG = showHTFFVG and htfBearFVG and close >= htfH0 and close <= htfL2
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MARKET STRUCTURE SHIFT (MSS)
+// ══════════════════════════════════════════════════════════════════════════════
+
+mssPH = ta.pivothigh(high, mssLookback, mssLookback)
+mssPL = ta.pivotlow(low,   mssLookback, mssLookback)
+
+var float mssLastPH   = na
+var float mssLastPH2  = na
+var float mssLastPL   = na
+var float mssLastPL2  = na
+
+if not na(mssPH)
+    mssLastPH2 := mssLastPH
+    mssLastPH  := mssPH
+if not na(mssPL)
+    mssLastPL2 := mssLastPL
+    mssLastPL  := mssPL
+
+isLowerHigh = not na(mssLastPH) and not na(mssLastPH2) and mssLastPH < mssLastPH2
+isHigherLow = not na(mssLastPL) and not na(mssLastPL2) and mssLastPL > mssLastPL2
+
+bullMSS = isLowerHigh and close > mssLastPH  and close[1] <= mssLastPH
+bearMSS = isHigherLow and close < mssLastPL  and close[1] >= mssLastPL
+
+var line mssBullLine = na
+var line mssBearLine = na
+
+if showMSS and bullMSS
+    if not na(mssBullLine)
+        line.delete(mssBullLine)
+    mssBullLine := line.new(bar_index - mssLookback, mssLastPH, bar_index, mssLastPH,
+         color=mssBullColor, style=line.style_dashed, width=2, extend=extend.right)
+    if showLabels
+        label.new(bar_index, mssLastPH, "MSS", style=label.style_label_down,
+             color=color.new(#00E676, 40), textcolor=color.white, size=size.tiny)
+
+if showMSS and bearMSS
+    if not na(mssBearLine)
+        line.delete(mssBearLine)
+    mssBearLine := line.new(bar_index - mssLookback, mssLastPL, bar_index, mssLastPL,
+         color=mssBearColor, style=line.style_dashed, width=2, extend=extend.right)
+    if showLabels
+        label.new(bar_index, mssLastPL, "MSS", style=label.style_label_up,
+             color=color.new(#FF1744, 40), textcolor=color.white, size=size.tiny)
+
+var int lastBullMSSBar = na
+var int lastBearMSSBar = na
+
+if bullMSS
+    lastBullMSSBar := bar_index
+if bearMSS
+    lastBearMSSBar := bar_index
+
+recentBullMSS = not na(lastBullMSSBar) and (bar_index - lastBullMSSBar) <= mssLookback * 3
+recentBearMSS = not na(lastBearMSSBar) and (bar_index - lastBearMSSBar) <= mssLookback * 3
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CHANGE OF CHARACTER (CHoCH)
+//  CHoCH = first counter-trend break of internal swing inside an existing leg.
+// ══════════════════════════════════════════════════════════════════════════════
+
+cPH = ta.pivothigh(high, 2, 2)
+cPL = ta.pivotlow(low,   2, 2)
+
+var float cLastPH = na
+var float cLastPL = na
+var int   trendDir = 0   // +1 bull, -1 bear
+
+if not na(cPH)
+    cLastPH := cPH
+if not na(cPL)
+    cLastPL := cPL
+
+bullCHoCH = false
+bearCHoCH = false
+
+if showCHoCH
+    // when downtrend (trendDir==-1) and we break above last internal high → bullish CHoCH
+    if trendDir == -1 and not na(cLastPH) and close > cLastPH and close[1] <= cLastPH
+        bullCHoCH := true
+        trendDir  := 1
+    // when uptrend (trendDir==1) and we break below last internal low → bearish CHoCH
+    if trendDir == 1 and not na(cLastPL) and close < cLastPL and close[1] >= cLastPL
+        bearCHoCH := true
+        trendDir  := -1
+    // bootstrap trend direction off raw BOS
+    if trendDir == 0 and bullBOS
+        trendDir := 1
+    if trendDir == 0 and bearBOS
+        trendDir := -1
+
+var int lastBullCHoCHBar = na
+var int lastBearCHoCHBar = na
+
+if bullCHoCH
+    lastBullCHoCHBar := bar_index
+if bearCHoCH
+    lastBearCHoCHBar := bar_index
+
+recentBullCHoCH = not na(lastBullCHoCHBar) and (bar_index - lastBullCHoCHBar) <= chochLookback
+recentBearCHoCH = not na(lastBearCHoCHBar) and (bar_index - lastBearCHoCHBar) <= chochLookback
+
+if showCHoCH and bullCHoCH
+    line.new(bar_index - 2, cLastPH, bar_index, cLastPH,
+         color=chochBullColor, style=line.style_dotted, width=2)
+    if showLabels
+        label.new(bar_index, cLastPH, "CHoCH", style=label.style_label_down,
+             color=color.new(#00B0FF, 40), textcolor=color.white, size=size.tiny)
+
+if showCHoCH and bearCHoCH
+    line.new(bar_index - 2, cLastPL, bar_index, cLastPL,
+         color=chochBearColor, style=line.style_dotted, width=2)
+    if showLabels
+        label.new(bar_index, cLastPL, "CHoCH", style=label.style_label_up,
+             color=color.new(#FF4081, 40), textcolor=color.white, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PREMIUM / DISCOUNT ZONES
+// ══════════════════════════════════════════════════════════════════════════════
+
+pdRangeHigh = ta.highest(high, pdLookback)
+pdRangeLow  = ta.lowest(low,   pdLookback)
+pdRange     = pdRangeHigh - pdRangeLow
+
+pdPremiumTop = pdRangeHigh
+pdPremiumBot = pdRangeHigh - pdRange * pdZoneSize
+
+pdDiscountBot = pdRangeLow
+pdDiscountTop = pdRangeLow + pdRange * pdZoneSize
+
+pdEquilibrium = pdRangeLow + pdRange * 0.5
+
+var box pdPremiumBox  = na
+var box pdDiscountBox = na
+var line pdEqLine     = na
+
+if showPD and barstate.islast
+    if not na(pdPremiumBox)
+        box.delete(pdPremiumBox)
+    if not na(pdDiscountBox)
+        box.delete(pdDiscountBox)
+    if not na(pdEqLine)
+        line.delete(pdEqLine)
+
+    pdPremiumBox := box.new(bar_index - pdLookback, pdPremiumTop, bar_index, pdPremiumBot,
+         bgcolor=pdBearColor, border_color=color.new(#F23645, 70),
+         border_style=line.style_dotted, extend=extend.right)
+    pdDiscountBox := box.new(bar_index - pdLookback, pdDiscountTop, bar_index, pdDiscountBot,
+         bgcolor=pdBullColor, border_color=color.new(#00C853, 70),
+         border_style=line.style_dotted, extend=extend.right)
+    pdEqLine := line.new(bar_index - pdLookback, pdEquilibrium, bar_index, pdEquilibrium,
+         color=color.new(color.white, 60), style=line.style_dashed, width=1, extend=extend.right)
+
+    if showLabels
+        label.new(bar_index, pdPremiumTop, "PREMIUM",
+             style=label.style_label_left, color=color.new(#F23645, 60),
+             textcolor=color.white, size=size.tiny)
+        label.new(bar_index, pdDiscountBot, "DISCOUNT",
+             style=label.style_label_left, color=color.new(#00C853, 60),
+             textcolor=color.white, size=size.tiny)
+        label.new(bar_index, pdEquilibrium, "EQ",
+             style=label.style_label_left, color=color.new(color.gray, 60),
+             textcolor=color.white, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ORDER BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var obBullBoxes = array.new_box()
+var obBullMitig = array.new_bool()
+var obBullHi    = array.new_float()
+var obBullLo    = array.new_float()
+
+var obBearBoxes = array.new_box()
+var obBearMitig = array.new_bool()
+var obBearHi    = array.new_float()
+var obBearLo    = array.new_float()
+
+if showOB and bullBOS
+    obIdx = 1
+    for k = 1 to math.min(obLookback * 2, 100)
+        if close[k] < open[k]
+            obIdx := k
+            break
+    oH = high[obIdx]
+    oL = low[obIdx]
+    oB = bar_index - obIdx
+    while array.size(obBullBoxes) >= obMaxBoxes
+        box.delete(array.shift(obBullBoxes))
+        array.shift(obBullMitig)
+        array.shift(obBullHi)
+        array.shift(obBullLo)
+    b = box.new(oB, oH, bar_index, oL, bgcolor=obBullColor, border_color=color.new(#2962FF, 15), extend=extRight)
+    array.push(obBullBoxes, b)
+    array.push(obBullMitig, false)
+    array.push(obBullHi, oH)
+    array.push(obBullLo, oL)
+    if showLabels
+        label.new(oB, oH, "OB", style=label.style_label_down, color=color.new(#2962FF, 55), textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+
+if showOB and bearBOS
+    obIdx = 1
+    for k = 1 to math.min(obLookback * 2, 100)
+        if close[k] > open[k]
+            obIdx := k
+            break
+    oH = high[obIdx]
+    oL = low[obIdx]
+    oB = bar_index - obIdx
+    while array.size(obBearBoxes) >= obMaxBoxes
+        box.delete(array.shift(obBearBoxes))
+        array.shift(obBearMitig)
+        array.shift(obBearHi)
+        array.shift(obBearLo)
+    b = box.new(oB, oH, bar_index, oL, bgcolor=obBearColor, border_color=color.new(#F23645, 15), extend=extRight)
+    array.push(obBearBoxes, b)
+    array.push(obBearMitig, false)
+    array.push(obBearHi, oH)
+    array.push(obBearLo, oL)
+    if showLabels
+        label.new(oB, oL, "OB", style=label.style_label_up, color=color.new(#F23645, 55), textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+
+if showOB and array.size(obBullBoxes) > 0
+    for i = 0 to array.size(obBullBoxes) - 1
+        if not array.get(obBullMitig, i)
+            mp = obMitigMode == "Wick" ? low : close
+            if mp < array.get(obBullLo, i)
+                if obHideMitig
+                    box.delete(array.get(obBullBoxes, i))
+                else
+                    box.set_bgcolor(array.get(obBullBoxes, i), color.new(#2962FF, 93))
+                array.set(obBullMitig, i, true)
+
+if showOB and array.size(obBearBoxes) > 0
+    for i = 0 to array.size(obBearBoxes) - 1
+        if not array.get(obBearMitig, i)
+            mp = obMitigMode == "Wick" ? high : close
+            if mp > array.get(obBearHi, i)
+                if obHideMitig
+                    box.delete(array.get(obBearBoxes, i))
+                else
+                    box.set_bgcolor(array.get(obBearBoxes, i), color.new(#F23645, 93))
+                array.set(obBearMitig, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  REJECTION BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+isBullRB = not na(lastPL) and low < lastPL and close > lastPL and candleRange > 0 and (lowerWick / candleRange >= rbWickRatio)
+isBearRB = not na(lastPH) and high > lastPH and close < lastPH and candleRange > 0 and (upperWick / candleRange >= rbWickRatio)
+
+var rbBullBoxes = array.new_box()
+var rbBullMitig = array.new_bool()
+var rbBullHi    = array.new_float()
+var rbBullLo    = array.new_float()
+
+var rbBearBoxes = array.new_box()
+var rbBearMitig = array.new_bool()
+var rbBearHi    = array.new_float()
+var rbBearLo    = array.new_float()
+
+if showRB and isBullRB
+    while array.size(rbBullBoxes) >= rbMaxBoxes
+        box.delete(array.shift(rbBullBoxes))
+        array.shift(rbBullMitig)
+        array.shift(rbBullHi)
+        array.shift(rbBullLo)
+    b = box.new(bar_index - 1, high, bar_index, low, bgcolor=rbBullColor, border_color=color.new(#00BCD4, 15), extend=extRight)
+    array.push(rbBullBoxes, b)
+    array.push(rbBullMitig, false)
+    array.push(rbBullHi, high)
+    array.push(rbBullLo, low)
+    if showLabels
+        label.new(bar_index, low, "RB", style=label.style_label_up, color=color.new(#00BCD4, 55), textcolor=color.white, size=size.tiny)
+
+if showRB and isBearRB
+    while array.size(rbBearBoxes) >= rbMaxBoxes
+        box.delete(array.shift(rbBearBoxes))
+        array.shift(rbBearMitig)
+        array.shift(rbBearHi)
+        array.shift(rbBearLo)
+    b = box.new(bar_index - 1, high, bar_index, low, bgcolor=rbBearColor, border_color=color.new(#FF6D00, 15), extend=extRight)
+    array.push(rbBearBoxes, b)
+    array.push(rbBearMitig, false)
+    array.push(rbBearHi, high)
+    array.push(rbBearLo, low)
+    if showLabels
+        label.new(bar_index, high, "RB", style=label.style_label_down, color=color.new(#FF6D00, 55), textcolor=color.white, size=size.tiny)
+
+if showRB and array.size(rbBullBoxes) > 0
+    for i = 0 to array.size(rbBullBoxes) - 1
+        if not array.get(rbBullMitig, i)
+            if close < array.get(rbBullLo, i)
+                if rbHideMitig
+                    box.delete(array.get(rbBullBoxes, i))
+                else
+                    box.set_bgcolor(array.get(rbBullBoxes, i), color.new(#00BCD4, 93))
+                array.set(rbBullMitig, i, true)
+
+if showRB and array.size(rbBearBoxes) > 0
+    for i = 0 to array.size(rbBearBoxes) - 1
+        if not array.get(rbBearMitig, i)
+            if close > array.get(rbBearHi, i)
+                if rbHideMitig
+                    box.delete(array.get(rbBearBoxes, i))
+                else
+                    box.set_bgcolor(array.get(rbBearBoxes, i), color.new(#FF6D00, 93))
+                array.set(rbBearMitig, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BREAKER BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var bbBullBoxes    = array.new_box()
+var bbBullHi       = array.new_float()
+var bbBullLo       = array.new_float()
+var bbBearBoxes    = array.new_box()
+var bbBearHi       = array.new_float()
+var bbBearLo       = array.new_float()
+var bbBearSpawnedH = array.new_float()
+var bbBullSpawnedH = array.new_float()
+
+_alreadySpawnedBear(oH) =>
+    found = false
+    if array.size(bbBearSpawnedH) > 0
+        for k = 0 to array.size(bbBearSpawnedH) - 1
+            if math.abs(array.get(bbBearSpawnedH, k) - oH) < syminfo.mintick * 5
+                found := true
+    found
+
+_alreadySpawnedBull(oH) =>
+    found = false
+    if array.size(bbBullSpawnedH) > 0
+        for k = 0 to array.size(bbBullSpawnedH) - 1
+            if math.abs(array.get(bbBullSpawnedH, k) - oH) < syminfo.mintick * 5
+                found := true
+    found
+
+if showBB and showOB
+    if array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if array.get(obBullMitig, i)
+                oH = array.get(obBullHi, i)
+                oL = array.get(obBullLo, i)
+                if not _alreadySpawnedBear(oH)
+                    while array.size(bbBearBoxes) >= bbMaxBoxes
+                        box.delete(array.shift(bbBearBoxes))
+                        array.shift(bbBearHi)
+                        array.shift(bbBearLo)
+                    b = box.new(bar_index - 1, oH, bar_index, oL, bgcolor=bbBearColor, border_color=color.new(#EF5350, 15), extend=extRight)
+                    array.push(bbBearBoxes, b)
+                    array.push(bbBearHi, oH)
+                    array.push(bbBearLo, oL)
+                    array.push(bbBearSpawnedH, oH)
+                    if showLabels
+                        label.new(bar_index, oH, "BB", style=label.style_label_down, color=color.new(#EF5350, 55), textcolor=color.white, size=size.tiny)
+
+    if array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if array.get(obBearMitig, i)
+                oH = array.get(obBearHi, i)
+                oL = array.get(obBearLo, i)
+                if not _alreadySpawnedBull(oH)
+                    while array.size(bbBullBoxes) >= bbMaxBoxes
+                        box.delete(array.shift(bbBullBoxes))
+                        array.shift(bbBullHi)
+                        array.shift(bbBullLo)
+                    b = box.new(bar_index - 1, oH, bar_index, oL, bgcolor=bbBullColor, border_color=color.new(#26A69A, 15), extend=extRight)
+                    array.push(bbBullBoxes, b)
+                    array.push(bbBullHi, oH)
+                    array.push(bbBullLo, oL)
+                    array.push(bbBullSpawnedH, oH)
+                    if showLabels
+                        label.new(bar_index, oL, "BB", style=label.style_label_up, color=color.new(#26A69A, 55), textcolor=color.white, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FAIR VALUE GAPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+minGapVal = close * fvgMinSize / 100.0
+isBullFVG = (low - high[2]) > minGapVal
+isBearFVG = (low[2] - high) > minGapVal
+
+var fvgBullBoxes   = array.new_box()
+var fvgBullLines   = array.new_line()
+var fvgBullTop     = array.new_float()
+var fvgBullBot     = array.new_float()
+var fvgBullDead    = array.new_bool()
+var fvgBullVisited = array.new_bool()
+
+var fvgBearBoxes   = array.new_box()
+var fvgBearLines   = array.new_line()
+var fvgBearTop     = array.new_float()
+var fvgBearBot     = array.new_float()
+var fvgBearDead    = array.new_bool()
+var fvgBearVisited = array.new_bool()
+
+if showFVG
+    if isBullFVG
+        while array.size(fvgBullBoxes) >= fvgMaxBoxes
+            box.delete(array.shift(fvgBullBoxes))
+            if array.size(fvgBullLines) > 0
+                line.delete(array.shift(fvgBullLines))
+            array.shift(fvgBullTop)
+            array.shift(fvgBullBot)
+            array.shift(fvgBullDead)
+            array.shift(fvgBullVisited)
+        gT = low
+        gB = high[2]
+        b  = box.new(bar_index[2], gT, bar_index, gB, bgcolor=fvgBullColor, border_color=color.new(#00C853, 20), extend=extRight)
+        array.push(fvgBullBoxes,   b)
+        array.push(fvgBullTop,     gT)
+        array.push(fvgBullBot,     gB)
+        array.push(fvgBullDead,    false)
+        array.push(fvgBullVisited, false)
+        if showFVGMid
+            l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 55), style=line.style_dashed, extend=extRight)
+            array.push(fvgBullLines, l)
+
+    if isBearFVG
+        while array.size(fvgBearBoxes) >= fvgMaxBoxes
+            box.delete(array.shift(fvgBearBoxes))
+            if array.size(fvgBearLines) > 0
+                line.delete(array.shift(fvgBearLines))
+            array.shift(fvgBearTop)
+            array.shift(fvgBearBot)
+            array.shift(fvgBearDead)
+            array.shift(fvgBearVisited)
+        gT = low[2]
+        gB = high
+        b  = box.new(bar_index[2], gT, bar_index, gB, bgcolor=fvgBearColor, border_color=color.new(#FF1744, 20), extend=extRight)
+        array.push(fvgBearBoxes,   b)
+        array.push(fvgBearTop,     gT)
+        array.push(fvgBearBot,     gB)
+        array.push(fvgBearDead,    false)
+        array.push(fvgBearVisited, false)
+        if showFVGMid
+            l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 55), style=line.style_dashed, extend=extRight)
+            array.push(fvgBearLines, l)
+
+if showFVG
+    if array.size(fvgBullBoxes) > 0
+        for i = array.size(fvgBullBoxes) - 1 to 0
+            if not array.get(fvgBullDead, i)
+                gT = array.get(fvgBullTop, i)
+                gB = array.get(fvgBullBot, i)
+                if low <= gT and high >= gB
+                    array.set(fvgBullVisited, i, true)
+                visited  = array.get(fvgBullVisited, i)
+                broken   = close < gB and open < gB
+                reversal = visited and close < open and candleRange > 0 and (upperWick / candleRange >= 0.45)
+                if broken or reversal
+                    box.delete(array.get(fvgBullBoxes, i))
+                    if i < array.size(fvgBullLines)
+                        line.delete(array.get(fvgBullLines, i))
+                    array.set(fvgBullDead, i, true)
+
+    if array.size(fvgBearBoxes) > 0
+        for i = array.size(fvgBearBoxes) - 1 to 0
+            if not array.get(fvgBearDead, i)
+                gT = array.get(fvgBearTop, i)
+                gB = array.get(fvgBearBot, i)
+                if low <= gT and high >= gB
+                    array.set(fvgBearVisited, i, true)
+                visited  = array.get(fvgBearVisited, i)
+                broken   = close > gT and open > gT
+                reversal = visited and close > open and candleRange > 0 and (lowerWick / candleRange >= 0.45)
+                if broken or reversal
+                    box.delete(array.get(fvgBearBoxes, i))
+                    if i < array.size(fvgBearLines)
+                        line.delete(array.get(fvgBearLines, i))
+                    array.set(fvgBearDead, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  INVERSE FVGs
+// ══════════════════════════════════════════════════════════════════════════════
+
+var pendBullTop     = array.new_float()
+var pendBullBot     = array.new_float()
+var pendBullBar     = array.new_int()
+var pendBearTop     = array.new_float()
+var pendBearBot     = array.new_float()
+var pendBearBar     = array.new_int()
+var ifvgBullBoxes   = array.new_box()
+var ifvgBullTop     = array.new_float()
+var ifvgBullBot     = array.new_float()
+var ifvgBullVisited = array.new_bool()
+var ifvgBearBoxes   = array.new_box()
+var ifvgBearTop     = array.new_float()
+var ifvgBearBot     = array.new_float()
+var ifvgBearVisited = array.new_bool()
+
+MAX_PEND = ifvgMaxBoxes * 2
+
+if showIFVG
+    if isBullFVG
+        if array.size(pendBullTop) >= MAX_PEND
+            array.shift(pendBullTop)
+            array.shift(pendBullBot)
+            array.shift(pendBullBar)
+        array.push(pendBullTop, low)
+        array.push(pendBullBot, high[2])
+        array.push(pendBullBar, bar_index[2])
+
+    if isBearFVG
+        if array.size(pendBearTop) >= MAX_PEND
+            array.shift(pendBearTop)
+            array.shift(pendBearBot)
+            array.shift(pendBearBar)
+        array.push(pendBearTop, low[2])
+        array.push(pendBearBot, high)
+        array.push(pendBearBar, bar_index[2])
+
+    idx = 0
+    while idx < array.size(pendBullTop)
+        t  = array.get(pendBullTop, idx)
+        b2 = array.get(pendBullBot, idx)
+        sB = array.get(pendBullBar, idx)
+        hit = ifvgStrict ? (close <= t and close >= b2) : (low <= t and high >= b2)
+        if hit
+            while array.size(ifvgBullBoxes) >= ifvgMaxBoxes
+                box.delete(array.shift(ifvgBullBoxes))
+                array.shift(ifvgBullTop)
+                array.shift(ifvgBullBot)
+                array.shift(ifvgBullVisited)
+            array.push(ifvgBullBoxes,   box.new(sB, t, bar_index, b2, bgcolor=ifvgBullColor, border_color=color.new(#FF6D00, 20), extend=extRight))
+            array.push(ifvgBullTop,     t)
+            array.push(ifvgBullBot,     b2)
+            array.push(ifvgBullVisited, false)
+            array.remove(pendBullTop, idx)
+            array.remove(pendBullBot, idx)
+            array.remove(pendBullBar, idx)
+        else
+            idx += 1
+
+    idx2 = 0
+    while idx2 < array.size(pendBearTop)
+        t  = array.get(pendBearTop, idx2)
+        b2 = array.get(pendBearBot, idx2)
+        sB = array.get(pendBearBar, idx2)
+        hit = ifvgStrict ? (close <= t and close >= b2) : (low <= t and high >= b2)
+        if hit
+            while array.size(ifvgBearBoxes) >= ifvgMaxBoxes
+                box.delete(array.shift(ifvgBearBoxes))
+                array.shift(ifvgBearTop)
+                array.shift(ifvgBearBot)
+                array.shift(ifvgBearVisited)
+            array.push(ifvgBearBoxes,   box.new(sB, t, bar_index, b2, bgcolor=ifvgBearColor, border_color=color.new(#AA00FF, 20), extend=extRight))
+            array.push(ifvgBearTop,     t)
+            array.push(ifvgBearBot,     b2)
+            array.push(ifvgBearVisited, false)
+            array.remove(pendBearTop, idx2)
+            array.remove(pendBearBot, idx2)
+            array.remove(pendBearBar, idx2)
+        else
+            idx2 += 1
+
+if showIFVG
+    if array.size(ifvgBullBoxes) > 0
+        idxR = array.size(ifvgBullBoxes) - 1
+        while idxR >= 0
+            gT = array.get(ifvgBullTop, idxR)
+            gB = array.get(ifvgBullBot, idxR)
+            if low <= gT and high >= gB
+                array.set(ifvgBullVisited, idxR, true)
+            visited  = array.get(ifvgBullVisited, idxR)
+            broken   = close < gB and open < gB
+            reversed = visited and close < open and candleRange > 0 and (upperWick / candleRange >= 0.45)
+            if broken or reversed
+                box.delete(array.get(ifvgBullBoxes, idxR))
+                array.remove(ifvgBullBoxes,   idxR)
+                array.remove(ifvgBullTop,     idxR)
+                array.remove(ifvgBullBot,     idxR)
+                array.remove(ifvgBullVisited, idxR)
+            idxR -= 1
+
+    if array.size(ifvgBearBoxes) > 0
+        idxR = array.size(ifvgBearBoxes) - 1
+        while idxR >= 0
+            gT = array.get(ifvgBearTop, idxR)
+            gB = array.get(ifvgBearBot, idxR)
+            if low <= gT and high >= gB
+                array.set(ifvgBearVisited, idxR, true)
+            visited  = array.get(ifvgBearVisited, idxR)
+            broken   = close > gT and open > gT
+            reversed = visited and close > open and candleRange > 0 and (lowerWick / candleRange >= 0.45)
+            if broken or reversed
+                box.delete(array.get(ifvgBearBoxes, idxR))
+                array.remove(ifvgBearBoxes,   idxR)
+                array.remove(ifvgBearTop,     idxR)
+                array.remove(ifvgBearBot,     idxR)
+                array.remove(ifvgBearVisited, idxR)
+            idxR -= 1
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMA 200
+// ══════════════════════════════════════════════════════════════════════════════
+
+ema200    = ta.ema(close, 200)
+trendBull = close > ema200
+trendBear = close < ema200
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  RSI + DIVERGENCE
+// ══════════════════════════════════════════════════════════════════════════════
+
+rsiVal = ta.rsi(close, rsiLength)
+
+rsiOverbought = rsiVal >= rsiOB
+rsiOversold   = rsiVal <= rsiOS
+
+// Regular bullish divergence: lower price low, higher RSI low
+priceLowNow  = ta.lowest(low,  rsiDivLB)
+priceLowPrev = ta.lowest(low,  rsiDivLB)[rsiDivLB]
+rsiLowNow    = ta.lowest(rsiVal, rsiDivLB)
+rsiLowPrev   = ta.lowest(rsiVal, rsiDivLB)[rsiDivLB]
+rsiBullDiv   = priceLowNow < priceLowPrev and rsiLowNow > rsiLowPrev and rsiOversold
+
+priceHighNow  = ta.highest(high, rsiDivLB)
+priceHighPrev = ta.highest(high, rsiDivLB)[rsiDivLB]
+rsiHighNow    = ta.highest(rsiVal, rsiDivLB)
+rsiHighPrev   = ta.highest(rsiVal, rsiDivLB)[rsiDivLB]
+rsiBearDiv    = priceHighNow > priceHighPrev and rsiHighNow < rsiHighPrev and rsiOverbought
+
+rsiBullSignal = useRSI and (rsiOversold or rsiBullDiv)
+rsiBearSignal = useRSI and (rsiOverbought or rsiBearDiv)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ADX (Trend Strength)
+// ══════════════════════════════════════════════════════════════════════════════
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxLength, adxLength)
+adxStrong   = useADX and adxVal >= adxThreshold
+adxBullStrong = adxStrong and diPlus > diMinus
+adxBearStrong = adxStrong and diMinus > diPlus
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ATR VOLATILITY REGIME
+// ══════════════════════════════════════════════════════════════════════════════
+
+atrVal = ta.atr(atrLength)
+atrAvg = ta.sma(atrVal, atrAvgLen)
+volHigh   = useATR and atrVal >= atrAvg * atrHighMult
+volLow    = useATR and atrVal <= atrAvg * atrLowMult
+volNormal = useATR and not volHigh and not volLow
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SESSION / KILLZONE DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+inAsia    = not na(time(timeframe.period, asiaSess,   "UTC"))
+inLondon  = not na(time(timeframe.period, londonSess, "UTC"))
+inNY      = not na(time(timeframe.period, nySess,     "UTC"))
+inKillzone = useSession and (inLondon or inNY)
+
+sessTxt = inLondon and inNY ? "LDN+NY" : inLondon ? "LONDON" : inNY ? "NY" : inAsia ? "ASIA" : "OFF"
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CONFLICT RESOLUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+if showOB and array.size(obBullBoxes) > 0 and array.size(obBearBoxes) > 0
+    for i = 0 to array.size(obBullBoxes) - 1
+        if not array.get(obBullMitig, i)
+            bH = array.get(obBullHi, i)
+            bL = array.get(obBullLo, i)
+            for j = 0 to array.size(obBearBoxes) - 1
+                if not array.get(obBearMitig, j)
+                    if zonesOverlap(bH, bL, array.get(obBearHi, j), array.get(obBearLo, j))
+                        if trendBear
+                            box.set_bgcolor(array.get(obBullBoxes, i), color.new(#2962FF, ALPHA_INVIS))
+                            box.set_border_color(array.get(obBullBoxes, i), color.new(#2962FF, ALPHA_INVIS))
+                            array.set(obBullMitig, i, true)
+                        else
+                            box.set_bgcolor(array.get(obBearBoxes, j), color.new(#F23645, ALPHA_INVIS))
+                            box.set_border_color(array.get(obBearBoxes, j), color.new(#F23645, ALPHA_INVIS))
+                            array.set(obBearMitig, j, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL ENGINE  (touch detection)
+// ══════════════════════════════════════════════════════════════════════════════
+
+sweepOkBull = not sweepFilter or isBullSweep()
+sweepOkBear = not sweepFilter or isBearSweep()
+
+touchBullOB = false
+touchBearOB = false
+touchBullRB = false
+touchBearRB = false
+touchBullBB = false
+touchBearBB = false
+
+if showOB
+    if array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if not array.get(obBullMitig, i)
+                if bullBodyIn(array.get(obBullHi, i), array.get(obBullLo, i))
+                    touchBullOB := true
+                    break
+    if array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if not array.get(obBearMitig, i)
+                if bearBodyIn(array.get(obBearHi, i), array.get(obBearLo, i))
+                    touchBearOB := true
+                    break
+
+if showRB
+    if array.size(rbBullBoxes) > 0
+        for i = 0 to array.size(rbBullBoxes) - 1
+            if not array.get(rbBullMitig, i)
+                if bullBodyIn(array.get(rbBullHi, i), array.get(rbBullLo, i))
+                    touchBullRB := true
+                    break
+    if array.size(rbBearBoxes) > 0
+        for i = 0 to array.size(rbBearBoxes) - 1
+            if not array.get(rbBearMitig, i)
+                if bearBodyIn(array.get(rbBearHi, i), array.get(rbBearLo, i))
+                    touchBearRB := true
+                    break
+
+if showBB
+    if array.size(bbBullBoxes) > 0
+        for i = 0 to array.size(bbBullBoxes) - 1
+            if bullBodyIn(array.get(bbBullHi, i), array.get(bbBullLo, i))
+                touchBullBB := true
+                break
+    if array.size(bbBearBoxes) > 0
+        for i = 0 to array.size(bbBearBoxes) - 1
+            if bearBodyIn(array.get(bbBearHi, i), array.get(bbBearLo, i))
+                touchBearBB := true
+                break
+
+touchBullOB_1 = false
+touchBearOB_1 = false
+touchBullRB_1 = false
+touchBearRB_1 = false
+touchBullBB_1 = false
+touchBearBB_1 = false
+
+if showOB
+    if array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if not array.get(obBullMitig, i)
+                zH = array.get(obBullHi, i)
+                zL = array.get(obBullLo, i)
+                prevBo = math.min(open[1], close[1])
+                if close[1] > open[1] and prevBo <= zH and prevBo >= zL
+                    touchBullOB_1 := true
+                    break
+    if array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if not array.get(obBearMitig, i)
+                zH = array.get(obBearHi, i)
+                zL = array.get(obBearLo, i)
+                if high[1] >= zL and close[1] < open[1] and close[1] < zH
+                    touchBearOB_1 := true
+                    break
+
+if showRB
+    if array.size(rbBullBoxes) > 0
+        for i = 0 to array.size(rbBullBoxes) - 1
+            if not array.get(rbBullMitig, i)
+                zH = array.get(rbBullHi, i)
+                zL = array.get(rbBullLo, i)
+                prevBo = math.min(open[1], close[1])
+                if close[1] > open[1] and prevBo <= zH and prevBo >= zL
+                    touchBullRB_1 := true
+                    break
+    if array.size(rbBearBoxes) > 0
+        for i = 0 to array.size(rbBearBoxes) - 1
+            if not array.get(rbBearMitig, i)
+                zH = array.get(rbBearHi, i)
+                zL = array.get(rbBearLo, i)
+                if high[1] >= zL and close[1] < open[1] and close[1] < zH
+                    touchBearRB_1 := true
+                    break
+
+if showBB
+    if array.size(bbBullBoxes) > 0
+        for i = 0 to array.size(bbBullBoxes) - 1
+            zH = array.get(bbBullHi, i)
+            zL = array.get(bbBullLo, i)
+            prevBo = math.min(open[1], close[1])
+            if close[1] > open[1] and prevBo <= zH and prevBo >= zL
+                touchBullBB_1 := true
+                break
+    if array.size(bbBearBoxes) > 0
+        for i = 0 to array.size(bbBearBoxes) - 1
+            zH = array.get(bbBearHi, i)
+            zL = array.get(bbBearLo, i)
+            if high[1] >= zL and close[1] < open[1] and close[1] < zH
+                touchBearBB_1 := true
+                break
+
+inBullFVGz  = false
+inBearFVGz  = false
+inBullIFVGz = false
+inBearIFVGz = false
+
+if showFVG
+    if array.size(fvgBullBoxes) > 0
+        for i = 0 to array.size(fvgBullBoxes) - 1
+            if not array.get(fvgBullDead, i)
+                if bullBodyIn(array.get(fvgBullTop, i), array.get(fvgBullBot, i))
+                    inBullFVGz := true
+                    break
+    if array.size(fvgBearBoxes) > 0
+        for i = 0 to array.size(fvgBearBoxes) - 1
+            if not array.get(fvgBearDead, i)
+                zH = array.get(fvgBearTop, i)
+                zL = array.get(fvgBearBot, i)
+                if high >= zL and close < open and close < zH
+                    inBearFVGz := true
+                    break
+
+if showIFVG
+    if array.size(ifvgBullBoxes) > 0
+        for i = 0 to array.size(ifvgBullBoxes) - 1
+            if bullBodyIn(array.get(ifvgBullTop, i), array.get(ifvgBullBot, i))
+                inBullIFVGz := true
+                break
+    if array.size(ifvgBearBoxes) > 0
+        for i = 0 to array.size(ifvgBearBoxes) - 1
+            zH = array.get(ifvgBearTop, i)
+            zL = array.get(ifvgBearBot, i)
+            if high >= zL and close < open and close < zH
+                inBearIFVGz := true
+                break
+
+insideBearZone = touchBearOB or touchBearRB or touchBearBB
+insideBullZone = touchBullOB or touchBullRB or touchBullBB
+
+rawBullBlock   = false
+rawBearBlock   = false
+rawBullBlock_1 = false
+rawBearBlock_1 = false
+
+if sigMode == "OB Only"
+    rawBullBlock   := touchBullOB
+    rawBearBlock   := touchBearOB
+    rawBullBlock_1 := touchBullOB_1
+    rawBearBlock_1 := touchBearOB_1
+else if sigMode == "RB Only"
+    rawBullBlock   := touchBullRB
+    rawBearBlock   := touchBearRB
+    rawBullBlock_1 := touchBullRB_1
+    rawBearBlock_1 := touchBearRB_1
+else if sigMode == "OB + RB"
+    rawBullBlock   := touchBullOB or touchBullRB
+    rawBearBlock   := touchBearOB or touchBearRB
+    rawBullBlock_1 := touchBullOB_1 or touchBullRB_1
+    rawBearBlock_1 := touchBearOB_1 or touchBearRB_1
+else
+    rawBullBlock   := touchBullOB or touchBullRB or touchBullBB
+    rawBearBlock   := touchBearOB or touchBearRB or touchBearBB
+    rawBullBlock_1 := touchBullOB_1 or touchBullRB_1 or touchBullBB_1
+    rawBearBlock_1 := touchBearOB_1 or touchBearRB_1 or touchBearBB_1
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY LEVELS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var liqHighLines  = array.new_line()
+var liqHighLevels = array.new_float()
+var liqHighSwept  = array.new_bool()
+var liqLowLines   = array.new_line()
+var liqLowLevels  = array.new_float()
+var liqLowSwept   = array.new_bool()
+
+liqPH = ta.pivothigh(high, liqLookback, liqLookback)
+liqPL = ta.pivotlow(low,   liqLookback, liqLookback)
+
+if not na(liqPH)
+    tolVal  = liqPH * liqTolerance / 100.0
+    matched = false
+    if array.size(liqHighLevels) > 0
+        for i = 0 to array.size(liqHighLevels) - 1
+            if not array.get(liqHighSwept, i)
+                if math.abs(array.get(liqHighLevels, i) - liqPH) <= tolVal
+                    matched := true
+                    break
+    if not matched
+        while array.size(liqHighLevels) >= liqMaxLines
+            if showLIQ and array.size(liqHighLines) > 0
+                line.delete(array.shift(liqHighLines))
+            else
+                array.shift(liqHighLines)
+            array.shift(liqHighLevels)
+            array.shift(liqHighSwept)
+        l = showLIQ ? line.new(bar_index - liqLookback, liqPH, bar_index, liqPH,
+             color=liqEQHColor, style=line.style_dashed, width=1, extend=extend.right) : line.new(0, 0, 1, 0, color=color.new(color.white, 100))
+        array.push(liqHighLines,  l)
+        array.push(liqHighLevels, liqPH)
+        array.push(liqHighSwept,  false)
+        if showLIQ and showLabels
+            label.new(bar_index - liqLookback, liqPH, "EQH",
+                 style=label.style_label_down, color=color.new(#FF5252, 55),
+                 textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+
+if not na(liqPL)
+    tolVal  = liqPL * liqTolerance / 100.0
+    matched = false
+    if array.size(liqLowLevels) > 0
+        for i = 0 to array.size(liqLowLevels) - 1
+            if not array.get(liqLowSwept, i)
+                if math.abs(array.get(liqLowLevels, i) - liqPL) <= tolVal
+                    matched := true
+                    break
+    if not matched
+        while array.size(liqLowLevels) >= liqMaxLines
+            if showLIQ and array.size(liqLowLines) > 0
+                line.delete(array.shift(liqLowLines))
+            else
+                array.shift(liqLowLines)
+            array.shift(liqLowLevels)
+            array.shift(liqLowSwept)
+        l = showLIQ ? line.new(bar_index - liqLookback, liqPL, bar_index, liqPL,
+             color=liqEQLColor, style=line.style_dashed, width=1, extend=extend.right) : line.new(0, 0, 1, 0, color=color.new(color.white, 100))
+        array.push(liqLowLines,  l)
+        array.push(liqLowLevels, liqPL)
+        array.push(liqLowSwept,  false)
+        if showLIQ and showLabels
+            label.new(bar_index - liqLookback, liqPL, "EQL",
+                 style=label.style_label_up, color=color.new(#69F0AE, 55),
+                 textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+
+// Track sweep events for "recent sweep" signal
+var int lastBullSweepBar = na  // sell-side liquidity swept (low taken out)
+var int lastBearSweepBar = na  // buy-side  liquidity swept (high taken out)
+
+if array.size(liqHighLevels) > 0
+    for i = 0 to array.size(liqHighLevels) - 1
+        if not array.get(liqHighSwept, i)
+            if close > array.get(liqHighLevels, i)
+                lastBearSweepBar := bar_index
+                if showLIQ
+                    if liqSweptHide
+                        line.delete(array.get(liqHighLines, i))
+                    else
+                        line.set_color(array.get(liqHighLines, i), color.new(#FF5252, 85))
+                array.set(liqHighSwept, i, true)
+
+if array.size(liqLowLevels) > 0
+    for i = 0 to array.size(liqLowLevels) - 1
+        if not array.get(liqLowSwept, i)
+            if close < array.get(liqLowLevels, i)
+                lastBullSweepBar := bar_index
+                if showLIQ
+                    if liqSweptHide
+                        line.delete(array.get(liqLowLines, i))
+                    else
+                        line.set_color(array.get(liqLowLines, i), color.new(#69F0AE, 85))
+                array.set(liqLowSwept, i, true)
+
+recentBullSweep = not na(lastBullSweepBar) and (bar_index - lastBullSweepBar) <= sweepWindow
+recentBearSweep = not na(lastBearSweepBar) and (bar_index - lastBearSweepBar) <= sweepWindow
+
+nearLiqHigh = false
+nearLiqLow  = false
+
+if array.size(liqHighLevels) > 0
+    for i = 0 to array.size(liqHighLevels) - 1
+        if not array.get(liqHighSwept, i)
+            if math.abs(close - array.get(liqHighLevels, i)) / close * 100.0 <= proxPct
+                nearLiqHigh := true
+                break
+
+if array.size(liqLowLevels) > 0
+    for i = 0 to array.size(liqLowLevels) - 1
+        if not array.get(liqLowSwept, i)
+            if math.abs(close - array.get(liqLowLevels, i)) / close * 100.0 <= proxPct
+                nearLiqLow := true
+                break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  VOLUME FILTER + DELTA
+// ══════════════════════════════════════════════════════════════════════════════
+
+volAvg  = ta.sma(volume, volLength)
+volOk   = not volFilterOn or (volume >= volMult * volAvg)
+
+buyVol   = candleRange > 0 ? (close - low)  / candleRange * volume : volume * 0.5
+sellVol  = candleRange > 0 ? (high - close) / candleRange * volume : volume * 0.5
+cumDelta = ta.cum(buyVol - sellVol)
+
+deltaPeriod  = 5
+bullDeltaDiv = close < close[deltaPeriod] and cumDelta > cumDelta[deltaPeriod]
+bearDeltaDiv = close > close[deltaPeriod] and cumDelta < cumDelta[deltaPeriod]
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  VOLUME PROFILE
+// ══════════════════════════════════════════════════════════════════════════════
+
+var box[]  vpBoxes   = array.new_box()
+var line   vpPOCLine = na
+var line   vpVAHLine = na
+var line   vpVALLine = na
+
+var float pocPriceVar = na
+var float vahPriceVar = na
+var float valPriceVar = na
+
+if showVP and barstate.islast
+    if array.size(vpBoxes) > 0
+        for i = 0 to array.size(vpBoxes) - 1
+            box.delete(array.get(vpBoxes, i))
+        array.clear(vpBoxes)
+    if not na(vpPOCLine)
+        line.delete(vpPOCLine)
+    if not na(vpVAHLine)
+        line.delete(vpVAHLine)
+    if not na(vpVALLine)
+        line.delete(vpVALLine)
+
+    vpHigh = ta.highest(high, vpLookback)
+    vpLow  = ta.lowest(low,   vpLookback)
+    vpStep = (vpHigh - vpLow) / vpRows
+
+    float[] rowVolBull = array.new_float(vpRows, 0.0)
+    float[] rowVolBear = array.new_float(vpRows, 0.0)
+
+    for k = 0 to vpLookback - 1
+        barClose = close[k]
+        barVol   = volume[k]
+        barBuy   = candleRange > 0 ? (close[k] - low[k]) / (high[k] - low[k]) * barVol : barVol * 0.5
+        barSell  = barVol - barBuy
+        rowIdx   = math.floor((barClose - vpLow) / vpStep)
+        rowIdx   := math.max(0, math.min(rowIdx, vpRows - 1))
+        array.set(rowVolBull, rowIdx, array.get(rowVolBull, rowIdx) + barBuy)
+        array.set(rowVolBear, rowIdx, array.get(rowVolBear, rowIdx) + barSell)
+
+    float maxVol = 0.0
+    for i = 0 to vpRows - 1
+        rowTotal = array.get(rowVolBull, i) + array.get(rowVolBear, i)
+        if rowTotal > maxVol
+            maxVol := rowTotal
+
+    int pocRow = 0
+    float pocVol = 0.0
+    for i = 0 to vpRows - 1
+        rowTotal = array.get(rowVolBull, i) + array.get(rowVolBear, i)
+        if rowTotal > pocVol
+            pocVol := rowTotal
+            pocRow := i
+
+    float totalVol = 0.0
+    for i = 0 to vpRows - 1
+        totalVol += array.get(rowVolBull, i) + array.get(rowVolBear, i)
+    float vaTarget = totalVol * 0.70
+    float vaVol    = pocVol
+    int   vahRow   = pocRow
+    int   valRow   = pocRow
+
+    int loPtr = pocRow - 1
+    int hiPtr = pocRow + 1
+
+    int _safetyIt = 0
+    while vaVol < vaTarget and _safetyIt < vpRows * 2
+        _safetyIt += 1
+        loVol = loPtr >= 0     ? array.get(rowVolBull, loPtr) + array.get(rowVolBear, loPtr) : 0.0
+        hiVol = hiPtr < vpRows ? array.get(rowVolBull, hiPtr) + array.get(rowVolBear, hiPtr) : 0.0
+        if hiVol >= loVol
+            vaVol  += hiVol
+            vahRow  := hiPtr
+            hiPtr   += 1
+        else
+            vaVol  += loVol
+            valRow  := loPtr
+            loPtr   -= 1
+        if loPtr < 0 and hiPtr >= vpRows
+            break
+
+    int rightBar = bar_index
+    float barWidthScale = vpWidth / 100.0
+
+    for i = 0 to vpRows - 1
+        rowLow  = vpLow + i * vpStep
+        rowHigh = rowLow + vpStep
+        bull    = array.get(rowVolBull, i)
+        bear    = array.get(rowVolBear, i)
+        total   = bull + bear
+        if total > 0 and maxVol > 0
+            barLen  = math.round(total / maxVol * 20 * barWidthScale)
+            bullLen = math.round(bull  / maxVol * 20 * barWidthScale)
+            if bullLen > 0
+                b = box.new(rightBar, rowHigh, rightBar + bullLen, rowLow,
+                     bgcolor=vpBullColor, border_color=color.new(#26A69A, 80),
+                     xloc=xloc.bar_index)
+                array.push(vpBoxes, b)
+            bearLen = barLen - bullLen
+            if bearLen > 0
+                b2 = box.new(rightBar + bullLen, rowHigh, rightBar + barLen, rowLow,
+                     bgcolor=vpBearColor, border_color=color.new(#EF5350, 80),
+                     xloc=xloc.bar_index)
+                array.push(vpBoxes, b2)
+
+    pocPriceVar := vpLow + pocRow * vpStep + vpStep * 0.5
+    vahPriceVar := vpLow + vahRow * vpStep + vpStep
+    valPriceVar := vpLow + valRow * vpStep
+
+    if showPOC
+        vpPOCLine := line.new(bar_index - vpLookback, pocPriceVar, bar_index + 25, pocPriceVar,
+             color=vpPOCColor, style=line.style_dashed, width=2)
+        label.new(bar_index + 26, pocPriceVar, "POC",
+             style=label.style_label_left, color=color.new(#FFEB3B, 30),
+             textcolor=color.white, size=size.tiny)
+
+    if showVAH
+        vpVAHLine := line.new(bar_index - vpLookback, vahPriceVar, bar_index + 25, vahPriceVar,
+             color=color.new(#00BCD4, 40), style=line.style_dotted, width=1)
+        vpVALLine := line.new(bar_index - vpLookback, valPriceVar, bar_index + 25, valPriceVar,
+             color=color.new(#FF6D00, 40), style=line.style_dotted, width=1)
+        label.new(bar_index + 26, vahPriceVar, "VAH",
+             style=label.style_label_left, color=color.new(#00BCD4, 50),
+             textcolor=color.white, size=size.tiny)
+        label.new(bar_index + 26, valPriceVar, "VAL",
+             style=label.style_label_left, color=color.new(#FF6D00, 50),
+             textcolor=color.white, size=size.tiny)
+
+priceAbovePOC = not na(pocPriceVar) and close > pocPriceVar
+priceBelowPOC = not na(pocPriceVar) and close < pocPriceVar
+inValueArea   = not na(vahPriceVar) and not na(valPriceVar) and close <= vahPriceVar and close >= valPriceVar
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CONFLUENCE SCORE  (now /15)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bullScore =
+   (touchBullOB        ? 1 : 0) +
+   (touchBullRB        ? 1 : 0) +
+   (touchBullBB        ? 1 : 0) +
+   (inBullFVGz         ? 1 : 0) +
+   (inBullIFVGz        ? 1 : 0) +
+   (nearLiqLow         ? 1 : 0) +
+   (inHTFBullOB        ? 1 : 0) +
+   (recentBullMSS      ? 1 : 0) +
+   (rsiBullSignal      ? 1 : 0) +
+   (adxBullStrong      ? 1 : 0) +
+   (inHTFBullFVG       ? 1 : 0) +
+   (recentBullCHoCH    ? 1 : 0) +
+   (inKillzone         ? 1 : 0) +
+   (bullDeltaDiv       ? 1 : 0) +
+   (recentBullSweep    ? 1 : 0)
+
+bearScore =
+   (touchBearOB        ? 1 : 0) +
+   (touchBearRB        ? 1 : 0) +
+   (touchBearBB        ? 1 : 0) +
+   (inBearFVGz         ? 1 : 0) +
+   (inBearIFVGz        ? 1 : 0) +
+   (nearLiqHigh        ? 1 : 0) +
+   (inHTFBearOB        ? 1 : 0) +
+   (recentBearMSS      ? 1 : 0) +
+   (rsiBearSignal      ? 1 : 0) +
+   (adxBearStrong      ? 1 : 0) +
+   (inHTFBearFVG       ? 1 : 0) +
+   (recentBearCHoCH    ? 1 : 0) +
+   (inKillzone         ? 1 : 0) +
+   (bearDeltaDiv       ? 1 : 0) +
+   (recentBearSweep    ? 1 : 0)
+
+MAX_SCORE = 15
+
+bullQualityPct = math.round(bullScore / MAX_SCORE * 100)
+bearQualityPct = math.round(bearScore / MAX_SCORE * 100)
+qualityPct     = math.max(bullQualityPct, bearQualityPct)
+
+confluenceBull = bullScore >= 2 and volOk and bullQualityPct >= minQualityPct
+confluenceBear = bearScore >= 2 and volOk and bearQualityPct >= minQualityPct
+
+rawBuy  = rawBullBlock and sweepOkBull and trendBull and not insideBearZone and confluenceBull
+rawSell = rawBearBlock and sweepOkBear and trendBear and not insideBullZone and confluenceBear
+
+blockRetestBull = rawBullBlock_1 and not rawBullBlock and sweepOkBull and trendBull and not insideBearZone and confluenceBull
+blockRetestBear = rawBearBlock_1 and not rawBearBlock and sweepOkBear and trendBear and not insideBullZone and confluenceBear
+fvgRetestBull   = (inBullFVGz or inBullIFVGz) and sweepOkBull and trendBull and not insideBearZone and confluenceBull
+fvgRetestBear   = (inBearFVGz or inBearIFVGz) and sweepOkBear and trendBear and not insideBullZone and confluenceBear
+rawRetestBuy    = blockRetestBull or fvgRetestBull
+rawRetestSell   = blockRetestBear or fvgRetestBear
+
+var bool waitingForSell = false
+var bool waitingForBuy  = false
+
+buySignal    = (rawBuy or rawRetestBuy)   and not waitingForSell and barstate.isconfirmed
+sellSignal   = (rawSell or rawRetestSell) and not waitingForBuy  and barstate.isconfirmed
+isRetestBuy  = rawRetestBuy  and not rawBuy  and not waitingForSell and barstate.isconfirmed
+isRetestSell = rawRetestSell and not rawSell and not waitingForBuy  and barstate.isconfirmed
+
+if buySignal
+    waitingForSell := true
+    waitingForBuy  := false
+if sellSignal
+    waitingForBuy  := true
+    waitingForSell := false
+
+var bool inLong  = false
+var bool inShort = false
+
+if buySignal
+    inLong  := true
+    inShort := false
+if sellSignal
+    inShort := true
+    inLong  := false
+
+exitLong  = inLong  and insideBearZone
+exitShort = inShort and insideBullZone
+
+if exitLong
+    inLong := false
+if exitShort
+    inShort := false
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PROXIMITY VISIBILITY
+// ══════════════════════════════════════════════════════════════════════════════
+
+if proxEnable and barstate.isconfirmed
+    if showOB and array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if not array.get(obBullMitig, i)
+                zH   = array.get(obBullHi, i)
+                zL   = array.get(obBullLo, i)
+                near = zoneNear(zH, zL, buySignal)
+                box.set_bgcolor(array.get(obBullBoxes, i), near ? obBullColor : color.new(#2962FF, ALPHA_INVIS))
+                box.set_border_color(array.get(obBullBoxes, i), near ? color.new(#2962FF, 15) : color.new(#2962FF, ALPHA_INVIS))
+
+    if showOB and array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if not array.get(obBearMitig, i)
+                zH   = array.get(obBearHi, i)
+                zL   = array.get(obBearLo, i)
+                near = zoneNear(zH, zL, sellSignal)
+                box.set_bgcolor(array.get(obBearBoxes, i), near ? obBearColor : color.new(#F23645, ALPHA_INVIS))
+                box.set_border_color(array.get(obBearBoxes, i), near ? color.new(#F23645, 15) : color.new(#F23645, ALPHA_INVIS))
+
+    if showRB and array.size(rbBullBoxes) > 0
+        for i = 0 to array.size(rbBullBoxes) - 1
+            if not array.get(rbBullMitig, i)
+                zH   = array.get(rbBullHi, i)
+                zL   = array.get(rbBullLo, i)
+                near = zoneNear(zH, zL, buySignal)
+                box.set_bgcolor(array.get(rbBullBoxes, i), near ? rbBullColor : color.new(#00BCD4, ALPHA_INVIS))
+                box.set_border_color(array.get(rbBullBoxes, i), near ? color.new(#00BCD4, 15) : color.new(#00BCD4, ALPHA_INVIS))
+
+    if showRB and array.size(rbBearBoxes) > 0
+        for i = 0 to array.size(rbBearBoxes) - 1
+            if not array.get(rbBearMitig, i)
+                zH   = array.get(rbBearHi, i)
+                zL   = array.get(rbBearLo, i)
+                near = zoneNear(zH, zL, sellSignal)
+                box.set_bgcolor(array.get(rbBearBoxes, i), near ? rbBearColor : color.new(#FF6D00, ALPHA_INVIS))
+                box.set_border_color(array.get(rbBearBoxes, i), near ? color.new(#FF6D00, 15) : color.new(#FF6D00, ALPHA_INVIS))
+
+    if showBB and array.size(bbBullBoxes) > 0
+        for i = 0 to array.size(bbBullBoxes) - 1
+            zH   = array.get(bbBullHi, i)
+            zL   = array.get(bbBullLo, i)
+            near = zoneNear(zH, zL, buySignal)
+            box.set_bgcolor(array.get(bbBullBoxes, i), near ? bbBullColor : color.new(#26A69A, ALPHA_INVIS))
+            box.set_border_color(array.get(bbBullBoxes, i), near ? color.new(#26A69A, 15) : color.new(#26A69A, ALPHA_INVIS))
+
+    if showBB and array.size(bbBearBoxes) > 0
+        for i = 0 to array.size(bbBearBoxes) - 1
+            zH   = array.get(bbBearHi, i)
+            zL   = array.get(bbBearLo, i)
+            near = zoneNear(zH, zL, sellSignal)
+            box.set_bgcolor(array.get(bbBearBoxes, i), near ? bbBearColor : color.new(#EF5350, ALPHA_INVIS))
+            box.set_border_color(array.get(bbBearBoxes, i), near ? color.new(#EF5350, 15) : color.new(#EF5350, ALPHA_INVIS))
+
+    if showFVG and array.size(fvgBullBoxes) > 0
+        for i = 0 to array.size(fvgBullBoxes) - 1
+            if not array.get(fvgBullDead, i)
+                zH   = array.get(fvgBullTop, i)
+                zL   = array.get(fvgBullBot, i)
+                near = zoneNear(zH, zL, buySignal)
+                box.set_bgcolor(array.get(fvgBullBoxes, i), near ? fvgBullColor : color.new(#00C853, ALPHA_INVIS))
+                box.set_border_color(array.get(fvgBullBoxes, i), near ? color.new(#00C853, 20) : color.new(#00C853, ALPHA_INVIS))
+
+    if showFVG and array.size(fvgBearBoxes) > 0
+        for i = 0 to array.size(fvgBearBoxes) - 1
+            if not array.get(fvgBearDead, i)
+                zH   = array.get(fvgBearTop, i)
+                zL   = array.get(fvgBearBot, i)
+                near = zoneNear(zH, zL, sellSignal)
+                box.set_bgcolor(array.get(fvgBearBoxes, i), near ? fvgBearColor : color.new(#FF1744, ALPHA_INVIS))
+                box.set_border_color(array.get(fvgBearBoxes, i), near ? color.new(#FF1744, 20) : color.new(#FF1744, ALPHA_INVIS))
+
+    if showIFVG and array.size(ifvgBullBoxes) > 0
+        for i = 0 to array.size(ifvgBullBoxes) - 1
+            b2   = array.get(ifvgBullBoxes, i)
+            zH   = box.get_top(b2)
+            zL   = box.get_bottom(b2)
+            near = zoneNear(zH, zL, buySignal)
+            box.set_bgcolor(b2, near ? ifvgBullColor : color.new(#FF6D00, ALPHA_INVIS))
+            box.set_border_color(b2, near ? color.new(#FF6D00, 20) : color.new(#FF6D00, ALPHA_INVIS))
+
+    if showIFVG and array.size(ifvgBearBoxes) > 0
+        for i = 0 to array.size(ifvgBearBoxes) - 1
+            b2   = array.get(ifvgBearBoxes, i)
+            zH   = box.get_top(b2)
+            zL   = box.get_bottom(b2)
+            near = zoneNear(zH, zL, sellSignal)
+            box.set_bgcolor(b2, near ? ifvgBearColor : color.new(#AA00FF, ALPHA_INVIS))
+            box.set_border_color(b2, near ? color.new(#AA00FF, 20) : color.new(#AA00FF, ALPHA_INVIS))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ENTRY ZONES
+// ══════════════════════════════════════════════════════════════════════════════
+
+var entryBullBlocks  = array.new_box()
+var entryBullCandles = array.new_box()
+var entryBullActive  = array.new_bool()
+var entryBullHi      = array.new_float()
+var entryBullLo      = array.new_float()
+
+var entryBearBlocks  = array.new_box()
+var entryBearCandles = array.new_box()
+var entryBearActive  = array.new_bool()
+var entryBearHi      = array.new_float()
+var entryBearLo      = array.new_float()
+
+ENTRY_MAX = 5
+
+if buySignal or isRetestBuy
+    ezH = float(na)
+    ezL = float(na)
+    if touchBullOB and array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if not array.get(obBullMitig, i) and na(ezH)
+                if bullBodyIn(array.get(obBullHi, i), array.get(obBullLo, i))
+                    ezH := array.get(obBullHi, i)
+                    ezL := array.get(obBullLo, i)
+    if na(ezH) and touchBullRB and array.size(rbBullBoxes) > 0
+        for i = 0 to array.size(rbBullBoxes) - 1
+            if not array.get(rbBullMitig, i) and na(ezH)
+                if bullBodyIn(array.get(rbBullHi, i), array.get(rbBullLo, i))
+                    ezH := array.get(rbBullHi, i)
+                    ezL := array.get(rbBullLo, i)
+    if na(ezH) and touchBullBB and array.size(bbBullBoxes) > 0
+        for i = 0 to array.size(bbBullBoxes) - 1
+            if na(ezH)
+                if bullBodyIn(array.get(bbBullHi, i), array.get(bbBullLo, i))
+                    ezH := array.get(bbBullHi, i)
+                    ezL := array.get(bbBullLo, i)
+    if na(ezH)
+        ezH := close
+        ezL := close
+
+    while array.size(entryBullBlocks) >= ENTRY_MAX
+        box.delete(array.shift(entryBullBlocks))
+        box.delete(array.shift(entryBullCandles))
+        array.shift(entryBullActive)
+        array.shift(entryBullHi)
+        array.shift(entryBullLo)
+
+    bBlock = box.new(bar_index, ezH, bar_index + 1, ezL,
+         bgcolor=color.new(#00C853,100), border_color=color.new(#00C853,20),
+         border_style=line.style_dotted, border_width=2, extend=extend.right)
+    cH = math.max(open, close)
+    cL = math.min(open, close)
+    bCandle = box.new(bar_index, cH, bar_index + 1, cL,
+         bgcolor=color.new(#00C853,100), border_color=color.new(#00C853,0),
+         border_style=line.style_dotted, border_width=2, extend=extend.right)
+    array.push(entryBullBlocks,  bBlock)
+    array.push(entryBullCandles, bCandle)
+    array.push(entryBullActive,  true)
+    array.push(entryBullHi, ezH)
+    array.push(entryBullLo, ezL)
+
+if sellSignal or isRetestSell
+    ezH = float(na)
+    ezL = float(na)
+    if touchBearOB and array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if not array.get(obBearMitig, i) and na(ezH)
+                if bearBodyIn(array.get(obBearHi, i), array.get(obBearLo, i))
+                    ezH := array.get(obBearHi, i)
+                    ezL := array.get(obBearLo, i)
+    if na(ezH) and touchBearRB and array.size(rbBearBoxes) > 0
+        for i = 0 to array.size(rbBearBoxes) - 1
+            if not array.get(rbBearMitig, i) and na(ezH)
+                if bearBodyIn(array.get(rbBearHi, i), array.get(rbBearLo, i))
+                    ezH := array.get(rbBearHi, i)
+                    ezL := array.get(rbBearLo, i)
+    if na(ezH) and touchBearBB and array.size(bbBearBoxes) > 0
+        for i = 0 to array.size(bbBearBoxes) - 1
+            if na(ezH)
+                if bearBodyIn(array.get(bbBearHi, i), array.get(bbBearLo, i))
+                    ezH := array.get(bbBearHi, i)
+                    ezL := array.get(bbBearLo, i)
+    if na(ezH)
+        ezH := close
+        ezL := close
+
+    while array.size(entryBearBlocks) >= ENTRY_MAX
+        box.delete(array.shift(entryBearBlocks))
+        box.delete(array.shift(entryBearCandles))
+        array.shift(entryBearActive)
+        array.shift(entryBearHi)
+        array.shift(entryBearLo)
+
+    bBlock = box.new(bar_index, ezH, bar_index + 1, ezL,
+         bgcolor=color.new(#F23645,100), border_color=color.new(#F23645,20),
+         border_style=line.style_dotted, border_width=2, extend=extend.right)
+    cH = math.max(open, close)
+    cL = math.min(open, close)
+    bCandle = box.new(bar_index, cH, bar_index + 1, cL,
+         bgcolor=color.new(#F23645,100), border_color=color.new(#F23645,0),
+         border_style=line.style_dotted, border_width=2, extend=extend.right)
+    array.push(entryBearBlocks,  bBlock)
+    array.push(entryBearCandles, bCandle)
+    array.push(entryBearActive,  true)
+    array.push(entryBearHi, ezH)
+    array.push(entryBearLo, ezL)
+
+if array.size(entryBullBlocks) > 0
+    for i = 0 to array.size(entryBullBlocks) - 1
+        if array.get(entryBullActive, i)
+            if close < array.get(entryBullLo, i) or exitLong
+                box.set_extend(array.get(entryBullBlocks,  i), extend.none)
+                box.set_extend(array.get(entryBullCandles, i), extend.none)
+                array.set(entryBullActive, i, false)
+
+if array.size(entryBearBlocks) > 0
+    for i = 0 to array.size(entryBearBlocks) - 1
+        if array.get(entryBearActive, i)
+            if close > array.get(entryBearHi, i) or exitShort
+                box.set_extend(array.get(entryBearBlocks,  i), extend.none)
+                box.set_extend(array.get(entryBearCandles, i), extend.none)
+                array.set(entryBearActive, i, false)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL LABELS + ENTRY ARROWS
+// ══════════════════════════════════════════════════════════════════════════════
+
+arrowGap = candleRange * 0.3
+
+var label sigLabel = na
+
+if buySignal and not isRetestBuy
+    sigLabel := label.new(bar_index, low - arrowGap,
+         "▲\n" + str.tostring(bullQualityPct) + "%",
+         style=label.style_none, textcolor=color.new(#00C853, 0), size=size.normal)
+
+if isRetestBuy
+    sigLabel := label.new(bar_index, low - arrowGap,
+         "▲\n" + str.tostring(bullQualityPct) + "%",
+         style=label.style_none, textcolor=color.new(#00C853, 30), size=size.small)
+
+if sellSignal and not isRetestSell
+    sigLabel := label.new(bar_index, high + arrowGap,
+         "▼\n" + str.tostring(bearQualityPct) + "%",
+         style=label.style_none, textcolor=color.new(#F23645, 0), size=size.normal)
+
+if isRetestSell
+    sigLabel := label.new(bar_index, high + arrowGap,
+         "▼\n" + str.tostring(bearQualityPct) + "%",
+         style=label.style_none, textcolor=color.new(#F23645, 30), size=size.small)
+
+var label exitLabel = na
+
+if showExit
+    if exitLong
+        exitLabel := label.new(bar_index, high + candleRange * sigOffset, "EXIT",
+             style=label.style_label_down, color=color.new(color.orange, 20),
+             textcolor=color.white, size=size.small)
+    if exitShort
+        exitLabel := label.new(bar_index, low - candleRange * sigOffset, "EXIT",
+             style=label.style_label_up, color=color.new(color.orange, 20),
+             textcolor=color.white, size=size.small)
+
+plot(ema200, title="EMA 200", color=color.new(color.yellow, 30), linewidth=1)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MARKET CONDITION DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+
+if showDash and barstate.islast
+    var table dash = table.new(dashPosition(), 2, 17,
+         bgcolor      = color.new(#1A1A2E, 10),
+         border_color = color.new(color.gray, 60),
+         border_width = 1,
+         frame_color  = color.new(color.gray, 40),
+         frame_width  = 1)
+
+    table.cell(dash, 0, 0, "CONDITION",   text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+    table.cell(dash, 1, 0, "STATUS",      text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+
+    // 1. EMA Trend
+    emaTrendTxt   = trendBull ? "BULL ▲" : trendBear ? "BEAR ▼" : "NEUTRAL"
+    emaTrendColor = trendBull ? color.new(#00C853, 0) : trendBear ? color.new(#F23645, 0) : color.new(color.gray, 20)
+    table.cell(dash, 0, 1, "EMA Trend",   text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 1, emaTrendTxt,   text_color=emaTrendColor,             text_size=size.tiny)
+
+    // 2. PD Zone
+    inPremium  = close >= pdPremiumBot
+    inDiscount = close <= pdDiscountTop
+    pdTxt   = inPremium ? "PREMIUM 🔴" : inDiscount ? "DISCOUNT 🟢" : "EQUILIBRIUM"
+    pdColor = inPremium ? color.new(#F23645, 0) : inDiscount ? color.new(#00C853, 0) : color.new(color.gray, 20)
+    table.cell(dash, 0, 2, "PD Zone",     text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 2, pdTxt,         text_color=pdColor,                   text_size=size.tiny)
+
+    // 3. MSS
+    mssTxt   = recentBullMSS ? "BULL MSS ▲" : recentBearMSS ? "BEAR MSS ▼" : "NONE"
+    mssColor = recentBullMSS ? color.new(#00E676, 0) : recentBearMSS ? color.new(#FF1744, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 3, "MSS",         text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 3, mssTxt,        text_color=mssColor,                  text_size=size.tiny)
+
+    // 4. CHoCH
+    chochTxt   = recentBullCHoCH ? "BULL CHoCH ▲" : recentBearCHoCH ? "BEAR CHoCH ▼" : "NONE"
+    chochColor = recentBullCHoCH ? color.new(#00B0FF, 0) : recentBearCHoCH ? color.new(#FF4081, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 4, "CHoCH",       text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 4, chochTxt,      text_color=chochColor,                text_size=size.tiny)
+
+    // 5. 4H OB
+    htfTxt   = inHTFBullOB ? "IN 4H BULL OB" : inHTFBearOB ? "IN 4H BEAR OB" : "NONE"
+    htfColor = inHTFBullOB ? color.new(#1565C0, 0) : inHTFBearOB ? color.new(#B71C1C, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 5, "4H OB",       text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 5, htfTxt,        text_color=htfColor,                  text_size=size.tiny)
+
+    // 6. 4H FVG
+    htfFvgTxt   = inHTFBullFVG ? "IN 4H BULL FVG" : inHTFBearFVG ? "IN 4H BEAR FVG" : "NONE"
+    htfFvgColor = inHTFBullFVG ? color.new(#00C853, 0) : inHTFBearFVG ? color.new(#FF1744, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 6, "4H FVG",      text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 6, htfFvgTxt,     text_color=htfFvgColor,               text_size=size.tiny)
+
+    // 7. BOS
+    bosTxt   = bullBOS ? "BULL BOS ▲" : bearBOS ? "BEAR BOS ▼" : "NONE"
+    bosColor = bullBOS ? color.new(#00C853, 0) : bearBOS ? color.new(#F23645, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 7, "BOS",         text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 7, bosTxt,        text_color=bosColor,                  text_size=size.tiny)
+
+    // 8. RSI
+    rsiTxt = str.tostring(math.round(rsiVal)) +
+              (rsiOverbought ? " OB" : rsiOversold ? " OS" : "") +
+              (rsiBullDiv ? " ↗DIV" : rsiBearDiv ? " ↘DIV" : "")
+    rsiColor = rsiBullDiv or rsiOversold ? color.new(#00C853, 0) :
+               rsiBearDiv or rsiOverbought ? color.new(#F23645, 0) :
+               color.new(color.gray, 20)
+    table.cell(dash, 0, 8, "RSI",         text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 8, rsiTxt,        text_color=rsiColor,                  text_size=size.tiny)
+
+    // 9. ADX
+    adxTxt   = str.tostring(math.round(adxVal)) + (adxStrong ? (diPlus > diMinus ? " TREND ▲" : " TREND ▼") : " RANGE")
+    adxColor = adxStrong ? (diPlus > diMinus ? color.new(#00C853, 0) : color.new(#F23645, 0)) : color.new(color.gray, 40)
+    table.cell(dash, 0, 9, "ADX",         text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 9, adxTxt,        text_color=adxColor,                  text_size=size.tiny)
+
+    // 10. Volatility
+    volRegimeTxt   = volHigh ? "HIGH ⚡" : volLow ? "LOW 💤" : "NORMAL"
+    volRegimeColor = volHigh ? color.new(#FFA726, 0) : volLow ? color.new(color.gray, 40) : color.new(#00BCD4, 30)
+    table.cell(dash, 0, 10, "Volatility",  text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 10, volRegimeTxt,  text_color=volRegimeColor,            text_size=size.tiny)
+
+    // 11. Volume
+    volTxt   = volOk ? "HIGH ✓" : "LOW ✗"
+    volColor = volOk ? color.new(#00C853, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 11, "Volume",      text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 11, volTxt,        text_color=volColor,                  text_size=size.tiny)
+
+    // 12. Delta Divergence
+    deltaTxt   = bullDeltaDiv ? "BULL ↗" : bearDeltaDiv ? "BEAR ↘" : "NONE"
+    deltaColor = bullDeltaDiv ? color.new(#00C853, 0) : bearDeltaDiv ? color.new(#F23645, 0) : color.new(color.gray, 40)
+    table.cell(dash, 0, 12, "Δ Divergence", text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 12, deltaTxt,       text_color=deltaColor,                text_size=size.tiny)
+
+    // 13. Liquidity / Sweep
+    liqTxt = nearLiqHigh ? "EQH NEAR ⚡" :
+             nearLiqLow  ? "EQL NEAR ⚡" :
+             recentBullSweep ? "BULL SWEEP" :
+             recentBearSweep ? "BEAR SWEEP" : "NONE"
+    liqColor = nearLiqHigh or recentBearSweep ? color.new(#FFA726, 0) :
+               nearLiqLow  or recentBullSweep ? color.new(#00C853, 0) :
+               color.new(color.gray, 40)
+    table.cell(dash, 0, 13, "Liquidity",    text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 13, liqTxt,         text_color=liqColor,                  text_size=size.tiny)
+
+    // 14. Session
+    sessColor = inLondon or inNY ? color.new(#00C853, 0) : inAsia ? color.new(#FFA726, 30) : color.new(color.gray, 40)
+    table.cell(dash, 0, 14, "Session",      text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 14, sessTxt,        text_color=sessColor,                 text_size=size.tiny)
+
+    // 15. Position
+    sigTxt   = inLong ? "LONG 🟢" : inShort ? "SHORT 🔴" : "FLAT ⚪"
+    sigColor = inLong ? color.new(#00C853, 0) : inShort ? color.new(#F23645, 0) : color.new(color.gray, 20)
+    table.cell(dash, 0, 15, "Position",     text_color=color.new(color.gray, 20), text_size=size.tiny)
+    table.cell(dash, 1, 15, sigTxt,         text_color=sigColor,                  text_size=size.tiny)
+
+    // 16. Signal Quality (composite)  +  Bias arrow
+    bullBias = (trendBull ? 1 : 0) + (inDiscount ? 1 : 0) + (recentBullMSS ? 1 : 0) + (inHTFBullOB ? 1 : 0) + (recentBullCHoCH ? 1 : 0) + (rsiBullSignal ? 1 : 0) + (adxBullStrong ? 1 : 0)
+    bearBias = (trendBear ? 1 : 0) + (inPremium  ? 1 : 0) + (recentBearMSS ? 1 : 0) + (inHTFBearOB ? 1 : 0) + (recentBearCHoCH ? 1 : 0) + (rsiBearSignal ? 1 : 0) + (adxBearStrong ? 1 : 0)
+    biasArrow = bullBias > bearBias ? "▲" : bearBias > bullBias ? "▼" : "•"
+    qualityTxt = str.tostring(qualityPct) + "% " + biasArrow + " (" + str.tostring(math.max(bullScore, bearScore)) + "/" + str.tostring(MAX_SCORE) + ")"
+    qualityColor = qualityPct >= 70 ? color.new(#00E676, 0) :
+                   qualityPct >= 50 ? color.new(#00C853, 0) :
+                   qualityPct >= 30 ? color.new(#FFA726, 0) :
+                   color.new(color.gray, 40)
+    table.cell(dash, 0, 16, "Signal Quality", text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+    table.cell(dash, 1, 16, qualityTxt,       text_color=qualityColor,              text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(buySignal  and not isRetestBuy,  "BUY Entry",           "▲ Buy Entry Signal")
+alertcondition(sellSignal and not isRetestSell, "SELL Entry",          "▼ Sell Entry Signal")
+alertcondition(isRetestBuy,                     "BUY Retest",          "↩ Buy Retest Signal")
+alertcondition(isRetestSell,                    "SELL Retest",         "↩ Sell Retest Signal")
+alertcondition(exitLong,                        "EXIT Long",           "EXIT Long Position")
+alertcondition(exitShort,                       "EXIT Short",          "EXIT Short Position")
+alertcondition(bullBOS,                         "Bull BOS",            "Bullish Break of Structure")
+alertcondition(bearBOS,                         "Bear BOS",            "Bearish Break of Structure")
+alertcondition(isBullFVG,                       "Bullish FVG",         "Bullish Fair Value Gap")
+alertcondition(isBearFVG,                       "Bearish FVG",         "Bearish Fair Value Gap")
+alertcondition(isBullRB,                        "Bull Rejection Block","Bullish Rejection Block")
+alertcondition(isBearRB,                        "Bear Rejection Block","Bearish Rejection Block")
+alertcondition(bullCHoCH,                       "Bull CHoCH",          "Bullish Change of Character")
+alertcondition(bearCHoCH,                       "Bear CHoCH",          "Bearish Change of Character")
+alertcondition(rsiBullDiv,                      "RSI Bull Divergence", "RSI Bullish Divergence")
+alertcondition(rsiBearDiv,                      "RSI Bear Divergence", "RSI Bearish Divergence")
+alertcondition(recentBullSweep and not recentBullSweep[1], "Bull Sweep", "Sell-side Liquidity Swept (Bullish)")
+alertcondition(recentBearSweep and not recentBearSweep[1], "Bear Sweep", "Buy-side Liquidity Swept (Bearish)")
