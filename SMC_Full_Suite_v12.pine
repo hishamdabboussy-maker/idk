@@ -136,9 +136,29 @@ proxPct     = input.float(2.0,  "Max Distance from Price (%)",  group=grpProx, m
 
 grpDisp = "⚙️ Display"
 extendBoxes = input.bool(true,  "Extend Boxes to Right",        group=grpDisp)
-showLabels  = input.bool(true,  "Show Zone Labels",             group=grpDisp)
+showLabels  = input.bool(true,  "Show Zone Labels (master)",    group=grpDisp)
 showDash    = input.bool(true,  "Show Market Condition Dashboard", group=grpDisp)
 dashPos     = input.string("top_right", "Dashboard Position",   group=grpDisp, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+
+grpLbl = "🏷️ Label Filter (declutter)"
+labelDensity = input.string("Important", "Label Density Preset", group=grpLbl, options=["All","Important","Minimal","Off"], tooltip="All = every label\nImportant = OB/RB/BB + MSS + CHoCH + 4H OB\nMinimal = only MSS + CHoCH + 4H OB\nOff = no zone labels")
+showOBLabels   = input.bool(true,  "Show OB labels",            group=grpLbl)
+showRBLabels   = input.bool(true,  "Show RB labels",            group=grpLbl)
+showBBLabels   = input.bool(true,  "Show BB labels",            group=grpLbl)
+showMSSLabels  = input.bool(true,  "Show MSS labels",           group=grpLbl)
+showCHoCHLabels= input.bool(true,  "Show CHoCH labels",         group=grpLbl)
+showHTFLabels  = input.bool(true,  "Show 4H OB labels",         group=grpLbl)
+showLIQLabels  = input.bool(false, "Show EQH/EQL labels",       group=grpLbl)
+showPDLabels   = input.bool(false, "Show Premium/Discount labels", group=grpLbl)
+showVPLabels   = input.bool(false, "Show POC/VAH/VAL labels",   group=grpLbl)
+minLabelGap    = input.int(3,      "Min bars between same-side labels", group=grpLbl, minval=0, maxval=50, tooltip="Suppresses duplicate labels too close together")
+
+grpBT = "🎯 Backtest Signals"
+showBacktestSig  = input.bool(true,  "Show plotshape BUY/SELL markers", group=grpBT, tooltip="Always-visible triangles for backtest replay")
+showBuySellText  = input.bool(true,  "Show BUY/SELL price labels",  group=grpBT)
+showRetestSig    = input.bool(true,  "Include retest signals",      group=grpBT)
+btPlotSize       = input.string("small", "Marker size",              group=grpBT, options=["tiny","small","normal","large"])
+showSigCount     = input.bool(true,  "Show signal counter on dash",  group=grpBT)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  HELPERS
@@ -185,6 +205,48 @@ dashPosition() =>
         "bottom_right"  => position.bottom_right
         "bottom_left"   => position.bottom_left
         => position.top_right
+
+// ── Label gating ──────────────────────────────────────────────────────────────
+// Density preset overrides individual toggles when stricter:
+//   All       → all individual toggles honored
+//   Important → only OB/RB/BB/MSS/CHoCH/4H OB; PD, LIQ, VP forced off
+//   Minimal   → only MSS/CHoCH/4H OB
+//   Off       → all labels off
+
+allowOBLabel    = showLabels and labelDensity != "Off" and (labelDensity == "All" or labelDensity == "Important") and showOBLabels
+allowRBLabel    = showLabels and labelDensity != "Off" and (labelDensity == "All" or labelDensity == "Important") and showRBLabels
+allowBBLabel    = showLabels and labelDensity != "Off" and (labelDensity == "All" or labelDensity == "Important") and showBBLabels
+allowMSSLabel   = showLabels and labelDensity != "Off" and showMSSLabels
+allowCHoCHLabel = showLabels and labelDensity != "Off" and showCHoCHLabels
+allowHTFLabel   = showLabels and labelDensity != "Off" and showHTFLabels
+allowLIQLabel   = showLabels and labelDensity == "All" and showLIQLabels
+allowPDLabel    = showLabels and labelDensity == "All" and showPDLabels
+allowVPLabel    = showLabels and labelDensity == "All" and showVPLabels
+
+// Anti-clutter spacing trackers (per label kind, per side)
+var int lastObBullLblBar    = na
+var int lastObBearLblBar    = na
+var int lastRbBullLblBar    = na
+var int lastRbBearLblBar    = na
+var int lastBbBullLblBar    = na
+var int lastBbBearLblBar    = na
+var int lastMssBullLblBar   = na
+var int lastMssBearLblBar   = na
+var int lastChochBullLblBar = na
+var int lastChochBearLblBar = na
+var int lastHtfBullLblBar   = na
+var int lastHtfBearLblBar   = na
+
+farEnough(lastBar) =>
+    na(lastBar) or (bar_index - lastBar) >= minLabelGap
+
+btSize() =>
+    switch btPlotSize
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        "large"  => size.large
+        => size.small
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  STRUCTURE
@@ -271,9 +333,10 @@ if showHTF and chartBelowHTF and htfBullBOS
     array.push(htfBullHi,    oH)
     array.push(htfBullLo,    oL)
     array.push(htfBullMitig, false)
-    if showLabels
+    if allowHTFLabel and farEnough(lastHtfBullLblBar)
         label.new(bar_index, oH, "4H OB", style=label.style_label_down,
              color=color.new(#1565C0, 40), textcolor=color.white, size=size.tiny)
+        lastHtfBullLblBar := bar_index
 
 if showHTF and chartBelowHTF and htfBearBOS
     htfObIdx = 1
@@ -295,9 +358,10 @@ if showHTF and chartBelowHTF and htfBearBOS
     array.push(htfBearHi,    oH)
     array.push(htfBearLo,    oL)
     array.push(htfBearMitig, false)
-    if showLabels
+    if allowHTFLabel and farEnough(lastHtfBearLblBar)
         label.new(bar_index, oL, "4H OB", style=label.style_label_up,
              color=color.new(#B71C1C, 40), textcolor=color.white, size=size.tiny)
+        lastHtfBearLblBar := bar_index
 
 if showHTF and chartBelowHTF
     if array.size(htfBullBoxes) > 0
@@ -376,18 +440,20 @@ if showMSS and bullMSS
         line.delete(mssBullLine)
     mssBullLine := line.new(bar_index - mssLookback, mssLastPH, bar_index, mssLastPH,
          color=mssBullColor, style=line.style_dashed, width=2, extend=extend.right)
-    if showLabels
+    if allowMSSLabel and farEnough(lastMssBullLblBar)
         label.new(bar_index, mssLastPH, "MSS", style=label.style_label_down,
              color=color.new(#00E676, 40), textcolor=color.white, size=size.tiny)
+        lastMssBullLblBar := bar_index
 
 if showMSS and bearMSS
     if not na(mssBearLine)
         line.delete(mssBearLine)
     mssBearLine := line.new(bar_index - mssLookback, mssLastPL, bar_index, mssLastPL,
          color=mssBearColor, style=line.style_dashed, width=2, extend=extend.right)
-    if showLabels
+    if allowMSSLabel and farEnough(lastMssBearLblBar)
         label.new(bar_index, mssLastPL, "MSS", style=label.style_label_up,
              color=color.new(#FF1744, 40), textcolor=color.white, size=size.tiny)
+        lastMssBearLblBar := bar_index
 
 var int lastBullMSSBar = na
 var int lastBearMSSBar = na
@@ -449,16 +515,18 @@ recentBearCHoCH = not na(lastBearCHoCHBar) and (bar_index - lastBearCHoCHBar) <=
 if showCHoCH and bullCHoCH
     line.new(bar_index - 2, cLastPH, bar_index, cLastPH,
          color=chochBullColor, style=line.style_dotted, width=2)
-    if showLabels
+    if allowCHoCHLabel and farEnough(lastChochBullLblBar)
         label.new(bar_index, cLastPH, "CHoCH", style=label.style_label_down,
              color=color.new(#00B0FF, 40), textcolor=color.white, size=size.tiny)
+        lastChochBullLblBar := bar_index
 
 if showCHoCH and bearCHoCH
     line.new(bar_index - 2, cLastPL, bar_index, cLastPL,
          color=chochBearColor, style=line.style_dotted, width=2)
-    if showLabels
+    if allowCHoCHLabel and farEnough(lastChochBearLblBar)
         label.new(bar_index, cLastPL, "CHoCH", style=label.style_label_up,
              color=color.new(#FF4081, 40), textcolor=color.white, size=size.tiny)
+        lastChochBearLblBar := bar_index
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  PREMIUM / DISCOUNT ZONES
@@ -497,7 +565,7 @@ if showPD and barstate.islast
     pdEqLine := line.new(bar_index - pdLookback, pdEquilibrium, bar_index, pdEquilibrium,
          color=color.new(color.white, 60), style=line.style_dashed, width=1, extend=extend.right)
 
-    if showLabels
+    if allowPDLabel
         label.new(bar_index, pdPremiumTop, "PREMIUM",
              style=label.style_label_left, color=color.new(#F23645, 60),
              textcolor=color.white, size=size.tiny)
@@ -541,8 +609,9 @@ if showOB and bullBOS
     array.push(obBullMitig, false)
     array.push(obBullHi, oH)
     array.push(obBullLo, oL)
-    if showLabels
+    if allowOBLabel and farEnough(lastObBullLblBar)
         label.new(oB, oH, "OB", style=label.style_label_down, color=color.new(#2962FF, 55), textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+        lastObBullLblBar := bar_index
 
 if showOB and bearBOS
     obIdx = 1
@@ -563,8 +632,9 @@ if showOB and bearBOS
     array.push(obBearMitig, false)
     array.push(obBearHi, oH)
     array.push(obBearLo, oL)
-    if showLabels
+    if allowOBLabel and farEnough(lastObBearLblBar)
         label.new(oB, oL, "OB", style=label.style_label_up, color=color.new(#F23645, 55), textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
+        lastObBearLblBar := bar_index
 
 if showOB and array.size(obBullBoxes) > 0
     for i = 0 to array.size(obBullBoxes) - 1
@@ -616,8 +686,9 @@ if showRB and isBullRB
     array.push(rbBullMitig, false)
     array.push(rbBullHi, high)
     array.push(rbBullLo, low)
-    if showLabels
+    if allowRBLabel and farEnough(lastRbBullLblBar)
         label.new(bar_index, low, "RB", style=label.style_label_up, color=color.new(#00BCD4, 55), textcolor=color.white, size=size.tiny)
+        lastRbBullLblBar := bar_index
 
 if showRB and isBearRB
     while array.size(rbBearBoxes) >= rbMaxBoxes
@@ -630,8 +701,9 @@ if showRB and isBearRB
     array.push(rbBearMitig, false)
     array.push(rbBearHi, high)
     array.push(rbBearLo, low)
-    if showLabels
+    if allowRBLabel and farEnough(lastRbBearLblBar)
         label.new(bar_index, high, "RB", style=label.style_label_down, color=color.new(#FF6D00, 55), textcolor=color.white, size=size.tiny)
+        lastRbBearLblBar := bar_index
 
 if showRB and array.size(rbBullBoxes) > 0
     for i = 0 to array.size(rbBullBoxes) - 1
@@ -698,8 +770,9 @@ if showBB and showOB
                     array.push(bbBearHi, oH)
                     array.push(bbBearLo, oL)
                     array.push(bbBearSpawnedH, oH)
-                    if showLabels
+                    if allowBBLabel and farEnough(lastBbBearLblBar)
                         label.new(bar_index, oH, "BB", style=label.style_label_down, color=color.new(#EF5350, 55), textcolor=color.white, size=size.tiny)
+                        lastBbBearLblBar := bar_index
 
     if array.size(obBearBoxes) > 0
         for i = 0 to array.size(obBearBoxes) - 1
@@ -716,8 +789,9 @@ if showBB and showOB
                     array.push(bbBullHi, oH)
                     array.push(bbBullLo, oL)
                     array.push(bbBullSpawnedH, oH)
-                    if showLabels
+                    if allowBBLabel and farEnough(lastBbBullLblBar)
                         label.new(bar_index, oL, "BB", style=label.style_label_up, color=color.new(#26A69A, 55), textcolor=color.white, size=size.tiny)
+                        lastBbBullLblBar := bar_index
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  FAIR VALUE GAPS
@@ -1238,7 +1312,7 @@ if not na(liqPH)
         array.push(liqHighLines,  l)
         array.push(liqHighLevels, liqPH)
         array.push(liqHighSwept,  false)
-        if showLIQ and showLabels
+        if showLIQ and allowLIQLabel
             label.new(bar_index - liqLookback, liqPH, "EQH",
                  style=label.style_label_down, color=color.new(#FF5252, 55),
                  textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
@@ -1265,7 +1339,7 @@ if not na(liqPL)
         array.push(liqLowLines,  l)
         array.push(liqLowLevels, liqPL)
         array.push(liqLowSwept,  false)
-        if showLIQ and showLabels
+        if showLIQ and allowLIQLabel
             label.new(bar_index - liqLookback, liqPL, "EQL",
                  style=label.style_label_up, color=color.new(#69F0AE, 55),
                  textcolor=color.white, size=size.tiny, xloc=xloc.bar_index)
@@ -1447,21 +1521,23 @@ if showVP and barstate.islast
     if showPOC
         vpPOCLine := line.new(bar_index - vpLookback, pocPriceVar, bar_index + 25, pocPriceVar,
              color=vpPOCColor, style=line.style_dashed, width=2)
-        label.new(bar_index + 26, pocPriceVar, "POC",
-             style=label.style_label_left, color=color.new(#FFEB3B, 30),
-             textcolor=color.white, size=size.tiny)
+        if allowVPLabel
+            label.new(bar_index + 26, pocPriceVar, "POC",
+                 style=label.style_label_left, color=color.new(#FFEB3B, 30),
+                 textcolor=color.white, size=size.tiny)
 
     if showVAH
         vpVAHLine := line.new(bar_index - vpLookback, vahPriceVar, bar_index + 25, vahPriceVar,
              color=color.new(#00BCD4, 40), style=line.style_dotted, width=1)
         vpVALLine := line.new(bar_index - vpLookback, valPriceVar, bar_index + 25, valPriceVar,
              color=color.new(#FF6D00, 40), style=line.style_dotted, width=1)
-        label.new(bar_index + 26, vahPriceVar, "VAH",
-             style=label.style_label_left, color=color.new(#00BCD4, 50),
-             textcolor=color.white, size=size.tiny)
-        label.new(bar_index + 26, valPriceVar, "VAL",
-             style=label.style_label_left, color=color.new(#FF6D00, 50),
-             textcolor=color.white, size=size.tiny)
+        if allowVPLabel
+            label.new(bar_index + 26, vahPriceVar, "VAH",
+                 style=label.style_label_left, color=color.new(#00BCD4, 50),
+                 textcolor=color.white, size=size.tiny)
+            label.new(bar_index + 26, valPriceVar, "VAL",
+                 style=label.style_label_left, color=color.new(#FF6D00, 50),
+                 textcolor=color.white, size=size.tiny)
 
 priceAbovePOC = not na(pocPriceVar) and close > pocPriceVar
 priceBelowPOC = not na(pocPriceVar) and close < pocPriceVar
@@ -1784,29 +1860,34 @@ arrowGap = candleRange * 0.3
 
 var label sigLabel = na
 
-if buySignal and not isRetestBuy
+// Old triangle+% labels are suppressed when new BUY/SELL text labels are shown
+// to avoid duplication. Set showBuySellText=false to fall back to old style.
+showLegacyArrows = not showBuySellText and labelDensity != "Off"
+
+if showLegacyArrows and buySignal and not isRetestBuy
     sigLabel := label.new(bar_index, low - arrowGap,
          "▲\n" + str.tostring(bullQualityPct) + "%",
          style=label.style_none, textcolor=color.new(#00C853, 0), size=size.normal)
 
-if isRetestBuy
+if showLegacyArrows and isRetestBuy
     sigLabel := label.new(bar_index, low - arrowGap,
          "▲\n" + str.tostring(bullQualityPct) + "%",
          style=label.style_none, textcolor=color.new(#00C853, 30), size=size.small)
 
-if sellSignal and not isRetestSell
+if showLegacyArrows and sellSignal and not isRetestSell
     sigLabel := label.new(bar_index, high + arrowGap,
          "▼\n" + str.tostring(bearQualityPct) + "%",
          style=label.style_none, textcolor=color.new(#F23645, 0), size=size.normal)
 
-if isRetestSell
+if showLegacyArrows and isRetestSell
     sigLabel := label.new(bar_index, high + arrowGap,
          "▼\n" + str.tostring(bearQualityPct) + "%",
          style=label.style_none, textcolor=color.new(#F23645, 30), size=size.small)
 
 var label exitLabel = na
 
-if showExit
+// Exit labels disabled when new plotshape backtest signals are on (X marker is enough)
+if showExit and not showBacktestSig
     if exitLong
         exitLabel := label.new(bar_index, high + candleRange * sigOffset, "EXIT",
              style=label.style_label_down, color=color.new(color.orange, 20),
@@ -1819,11 +1900,68 @@ if showExit
 plot(ema200, title="EMA 200", color=color.new(color.yellow, 30), linewidth=1)
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  BACKTEST SIGNALS  (plotshape — always visible, work with bar replay)
+// ══════════════════════════════════════════════════════════════════════════════
+
+btBuy  = buySignal  and (showRetestSig or not isRetestBuy)
+btSell = sellSignal and (showRetestSig or not isRetestSell)
+
+plotshape(showBacktestSig and btBuy and not isRetestBuy,  title="BUY",          location=location.belowbar, style=shape.triangleup,   color=color.new(#00C853, 0),  size=size.small, text="BUY",    textcolor=color.new(#00C853, 0))
+plotshape(showBacktestSig and btSell and not isRetestSell, title="SELL",        location=location.abovebar, style=shape.triangledown, color=color.new(#F23645, 0),  size=size.small, text="SELL",   textcolor=color.new(#F23645, 0))
+plotshape(showBacktestSig and isRetestBuy,                 title="BUY Retest",  location=location.belowbar, style=shape.triangleup,   color=color.new(#00C853, 40), size=size.tiny,  text="re-BUY", textcolor=color.new(#00C853, 30))
+plotshape(showBacktestSig and isRetestSell,                title="SELL Retest", location=location.abovebar, style=shape.triangledown, color=color.new(#F23645, 40), size=size.tiny,  text="re-SELL",textcolor=color.new(#F23645, 30))
+plotshape(showBacktestSig and exitLong,                    title="Exit Long",   location=location.abovebar, style=shape.xcross,       color=color.new(color.orange, 0), size=size.tiny, text="X",   textcolor=color.new(color.orange, 0))
+plotshape(showBacktestSig and exitShort,                   title="Exit Short",  location=location.belowbar, style=shape.xcross,       color=color.new(color.orange, 0), size=size.tiny, text="X",   textcolor=color.new(color.orange, 0))
+
+// Optional "BUY @ price" / "SELL @ price" detail labels
+if showBuySellText and btBuy
+    label.new(bar_index, low - candleRange * 0.6,
+         "BUY\n" + str.tostring(close, format.mintick) + "\n" + str.tostring(bullQualityPct) + "%",
+         style=label.style_label_up, color=color.new(#00C853, 20),
+         textcolor=color.white, size=btSize())
+
+if showBuySellText and btSell
+    label.new(bar_index, high + candleRange * 0.6,
+         "SELL\n" + str.tostring(close, format.mintick) + "\n" + str.tostring(bearQualityPct) + "%",
+         style=label.style_label_down, color=color.new(#F23645, 20),
+         textcolor=color.white, size=btSize())
+
+// Backtest counter (per-session running total)
+var int sigCountBuy       = 0
+var int sigCountSell      = 0
+var int sigCountRetestBuy = 0
+var int sigCountRetestSell= 0
+var int sigCountExitLong  = 0
+var int sigCountExitShort = 0
+
+if buySignal and not isRetestBuy
+    sigCountBuy += 1
+if sellSignal and not isRetestSell
+    sigCountSell += 1
+if isRetestBuy
+    sigCountRetestBuy += 1
+if isRetestSell
+    sigCountRetestSell += 1
+if exitLong
+    sigCountExitLong += 1
+if exitShort
+    sigCountExitShort += 1
+
+// Plot the actual signal events as series too (TradingView Strategy Tester / Data Window readability)
+plot(buySignal  and not isRetestBuy ? 1 : 0, title="Buy Event",         display=display.data_window, color=color.green)
+plot(sellSignal and not isRetestSell? 1 : 0, title="Sell Event",        display=display.data_window, color=color.red)
+plot(isRetestBuy  ? 1 : 0,                   title="Retest Buy Event",  display=display.data_window, color=color.green)
+plot(isRetestSell ? 1 : 0,                   title="Retest Sell Event", display=display.data_window, color=color.red)
+plot(qualityPct,                             title="Signal Quality %",  display=display.data_window, color=color.yellow)
+plot(bullScore,                              title="Bull Score",        display=display.data_window, color=color.green)
+plot(bearScore,                              title="Bear Score",        display=display.data_window, color=color.red)
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  MARKET CONDITION DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
 
 if showDash and barstate.islast
-    var table dash = table.new(dashPosition(), 2, 17,
+    var table dash = table.new(dashPosition(), 2, 18,
          bgcolor      = color.new(#1A1A2E, 10),
          border_color = color.new(color.gray, 60),
          border_width = 1,
@@ -1944,6 +2082,16 @@ if showDash and barstate.islast
                    color.new(color.gray, 40)
     table.cell(dash, 0, 16, "Signal Quality", text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
     table.cell(dash, 1, 16, qualityTxt,       text_color=qualityColor,              text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+
+    // 17. Signal counter (backtest)
+    if showSigCount
+        countTxt = "B:" + str.tostring(sigCountBuy)
+                  + " S:" + str.tostring(sigCountSell)
+                  + " | rB:" + str.tostring(sigCountRetestBuy)
+                  + " rS:" + str.tostring(sigCountRetestSell)
+                  + " | X:" + str.tostring(sigCountExitLong + sigCountExitShort)
+        table.cell(dash, 0, 17, "Signal Count", text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+        table.cell(dash, 1, 17, countTxt,       text_color=color.new(color.white, 0), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ALERTS
