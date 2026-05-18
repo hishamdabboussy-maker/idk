@@ -1604,15 +1604,9 @@ balMode    = sigStrictness == "Balanced"
 
 minQPermissive = math.max(10, minQualityPct - 10)
 
-confluenceBull =
-   strictMode ? (bullScore >= 2 and volOk and trendBull and bullQualityPct >= minQualityPct) :
-   balMode    ? (bullScore >= 2 and (trendBull or volOk) and bullQualityPct >= minQualityPct) :
-                (bullScore >= 1 and bullQualityPct >= minQPermissive)
+confluenceBull = strictMode ? (bullScore >= 2 and volOk and trendBull and bullQualityPct >= minQualityPct) : balMode ? (bullScore >= 2 and (trendBull or volOk) and bullQualityPct >= minQualityPct) : (bullScore >= 1 and bullQualityPct >= minQPermissive)
 
-confluenceBear =
-   strictMode ? (bearScore >= 2 and volOk and trendBear and bearQualityPct >= minQualityPct) :
-   balMode    ? (bearScore >= 2 and (trendBear or volOk) and bearQualityPct >= minQualityPct) :
-                (bearScore >= 1 and bearQualityPct >= minQPermissive)
+confluenceBear = strictMode ? (bearScore >= 2 and volOk and trendBear and bearQualityPct >= minQualityPct) : balMode ? (bearScore >= 2 and (trendBear or volOk) and bearQualityPct >= minQualityPct) : (bearScore >= 1 and bearQualityPct >= minQPermissive)
 
 // trend veto only in Strict; Balanced & Permissive let counter-trend touches through
 trendOkBull = strictMode ? trendBull : true
