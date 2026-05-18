@@ -1,5 +1,10 @@
 //@version=5
-indicator("SMC Full Suite v12", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("SMC Full Suite v13", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+// v13 changes:
+//   - Signal Strictness preset (Strict / Balanced / Permissive) replaces hard EMA + volume + 40% quality gauntlet
+//   - "Potential Signal" dots show every raw zone touch BEFORE filters (so you can SEE rejected possibilities)
+//   - Label density defaults to Minimal, higher anti-clutter spacing, OB/RB/BB/CHoCH labels off by default
+//   - Min Quality % default lowered from 40 -> 20
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  SETTINGS
@@ -44,12 +49,14 @@ ifvgBullColor= input.color(color.new(#FF6D00, 78), "Bull IFVG",group=grpIFVG)
 ifvgBearColor= input.color(color.new(#AA00FF, 78), "Bear IFVG",group=grpIFVG)
 
 grpSIG = "📊 Signals"
-showExit    = input.bool(true,  "Show Exit Signals",            group=grpSIG)
-sigMode     = input.string("OB + RB", "Signal Source",         group=grpSIG, options=["OB Only","RB Only","OB + RB","All Blocks"])
-sweepFilter = input.bool(true,  "Require Sweep Candle",         group=grpSIG)
-sweepRatio  = input.float(0.55, "Sweep Wick Ratio",             group=grpSIG, minval=0.3, maxval=0.9, step=0.05)
-sigOffset   = input.int(2,      "Label Offset",                 group=grpSIG, minval=1, maxval=10)
-minQualityPct = input.int(40,   "Min Signal Quality % (filter)", group=grpSIG, minval=0,  maxval=100, step=5)
+showExit       = input.bool(true,  "Show Exit Signals",            group=grpSIG)
+sigMode        = input.string("OB + RB", "Signal Source",         group=grpSIG, options=["OB Only","RB Only","OB + RB","All Blocks"])
+sigStrictness  = input.string("Balanced", "Strictness",            group=grpSIG, options=["Strict","Balanced","Permissive"], tooltip="Strict = require EMA+volume+sweep+quality (very few signals)\nBalanced = recommended; relaxes one of EMA/volume\nPermissive = touches with light confluence only")
+sweepFilter    = input.bool(false, "Require Sweep Candle",         group=grpSIG, tooltip="Was on by default in v12 — turning off lets retests through")
+sweepRatio     = input.float(0.55, "Sweep Wick Ratio",             group=grpSIG, minval=0.3, maxval=0.9, step=0.05)
+sigOffset      = input.int(2,      "Label Offset",                 group=grpSIG, minval=1, maxval=10)
+minQualityPct  = input.int(20,     "Min Signal Quality % (filter)", group=grpSIG, minval=0,  maxval=100, step=5)
+showPotential  = input.bool(true,  "Show Potential Signal dots",   group=grpSIG, tooltip="Plots a small dot on EVERY raw zone touch, before EMA/volume/quality filters. Lets you see rejected possibilities.")
 
 grpHTF = "🔷 HTF Order Blocks (4H)"
 showHTF     = input.bool(true,  "Show 4H OBs",                  group=grpHTF)
@@ -141,17 +148,17 @@ showDash    = input.bool(true,  "Show Market Condition Dashboard", group=grpDisp
 dashPos     = input.string("top_right", "Dashboard Position",   group=grpDisp, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
 
 grpLbl = "🏷️ Label Filter (declutter)"
-labelDensity = input.string("Important", "Label Density Preset", group=grpLbl, options=["All","Important","Minimal","Off"], tooltip="All = every label\nImportant = OB/RB/BB + MSS + CHoCH + 4H OB\nMinimal = only MSS + CHoCH + 4H OB\nOff = no zone labels")
-showOBLabels   = input.bool(true,  "Show OB labels",            group=grpLbl)
-showRBLabels   = input.bool(true,  "Show RB labels",            group=grpLbl)
-showBBLabels   = input.bool(true,  "Show BB labels",            group=grpLbl)
+labelDensity = input.string("Minimal", "Label Density Preset", group=grpLbl, options=["All","Important","Minimal","Off"], tooltip="All = every label\nImportant = OB/RB/BB + MSS + CHoCH + 4H OB\nMinimal = only MSS + CHoCH + 4H OB\nOff = no zone labels")
+showOBLabels   = input.bool(false, "Show OB labels",            group=grpLbl)
+showRBLabels   = input.bool(false, "Show RB labels",            group=grpLbl)
+showBBLabels   = input.bool(false, "Show BB labels",            group=grpLbl)
 showMSSLabels  = input.bool(true,  "Show MSS labels",           group=grpLbl)
-showCHoCHLabels= input.bool(true,  "Show CHoCH labels",         group=grpLbl)
+showCHoCHLabels= input.bool(false, "Show CHoCH labels",         group=grpLbl)
 showHTFLabels  = input.bool(true,  "Show 4H OB labels",         group=grpLbl)
 showLIQLabels  = input.bool(false, "Show EQH/EQL labels",       group=grpLbl)
 showPDLabels   = input.bool(false, "Show Premium/Discount labels", group=grpLbl)
 showVPLabels   = input.bool(false, "Show POC/VAH/VAL labels",   group=grpLbl)
-minLabelGap    = input.int(3,      "Min bars between same-side labels", group=grpLbl, minval=0, maxval=50, tooltip="Suppresses duplicate labels too close together")
+minLabelGap    = input.int(8,      "Min bars between same-side labels", group=grpLbl, minval=0, maxval=50, tooltip="Suppresses duplicate labels too close together")
 
 grpBT = "🎯 Backtest Signals"
 showBacktestSig  = input.bool(true,  "Show plotshape BUY/SELL markers", group=grpBT, tooltip="Always-visible triangles for backtest replay")
@@ -1587,18 +1594,38 @@ bullQualityPct = math.round(bullScore / MAX_SCORE * 100)
 bearQualityPct = math.round(bearScore / MAX_SCORE * 100)
 qualityPct     = math.max(bullQualityPct, bearQualityPct)
 
-confluenceBull = bullScore >= 2 and volOk and bullQualityPct >= minQualityPct
-confluenceBear = bearScore >= 2 and volOk and bearQualityPct >= minQualityPct
+// ── Strictness presets ──────────────────────────────────────────────────────
+// Strict     : EMA aligned, volume confirmed, quality >= minQualityPct, score >= 2
+// Balanced   : (EMA aligned OR volume confirmed) AND quality >= minQualityPct AND score >= 2
+// Permissive : score >= 1 AND quality >= max(10, minQualityPct - 10) — no EMA/vol veto
+strictMode = sigStrictness == "Strict"
+permMode   = sigStrictness == "Permissive"
+balMode    = sigStrictness == "Balanced"
 
-rawBuy  = rawBullBlock and sweepOkBull and trendBull and not insideBearZone and confluenceBull
-rawSell = rawBearBlock and sweepOkBear and trendBear and not insideBullZone and confluenceBear
+minQPermissive = math.max(10, minQualityPct - 10)
 
-blockRetestBull = rawBullBlock_1 and not rawBullBlock and sweepOkBull and trendBull and not insideBearZone and confluenceBull
-blockRetestBear = rawBearBlock_1 and not rawBearBlock and sweepOkBear and trendBear and not insideBullZone and confluenceBear
-fvgRetestBull   = (inBullFVGz or inBullIFVGz) and sweepOkBull and trendBull and not insideBearZone and confluenceBull
-fvgRetestBear   = (inBearFVGz or inBearIFVGz) and sweepOkBear and trendBear and not insideBullZone and confluenceBear
+confluenceBull = strictMode ? (bullScore >= 2 and volOk and trendBull and bullQualityPct >= minQualityPct) : balMode ? (bullScore >= 2 and (trendBull or volOk) and bullQualityPct >= minQualityPct) : (bullScore >= 1 and bullQualityPct >= minQPermissive)
+
+confluenceBear = strictMode ? (bearScore >= 2 and volOk and trendBear and bearQualityPct >= minQualityPct) : balMode ? (bearScore >= 2 and (trendBear or volOk) and bearQualityPct >= minQualityPct) : (bearScore >= 1 and bearQualityPct >= minQPermissive)
+
+// trend veto only in Strict; Balanced & Permissive let counter-trend touches through
+trendOkBull = strictMode ? trendBull : true
+trendOkBear = strictMode ? trendBear : true
+
+rawBuy  = rawBullBlock and sweepOkBull and trendOkBull and not insideBearZone and confluenceBull
+rawSell = rawBearBlock and sweepOkBear and trendOkBear and not insideBullZone and confluenceBear
+
+blockRetestBull = rawBullBlock_1 and not rawBullBlock and sweepOkBull and trendOkBull and not insideBearZone and confluenceBull
+blockRetestBear = rawBearBlock_1 and not rawBearBlock and sweepOkBear and trendOkBear and not insideBullZone and confluenceBear
+fvgRetestBull   = (inBullFVGz or inBullIFVGz) and sweepOkBull and trendOkBull and not insideBearZone and confluenceBull
+fvgRetestBear   = (inBearFVGz or inBearIFVGz) and sweepOkBear and trendOkBear and not insideBullZone and confluenceBear
 rawRetestBuy    = blockRetestBull or fvgRetestBull
 rawRetestSell   = blockRetestBear or fvgRetestBear
+
+// "Potential" = raw zone touch BEFORE the strict gauntlet (EMA / vol / quality / sweep).
+// Useful to see opportunities the engine rejected.
+potentialBull = (rawBullBlock or rawBullBlock_1 or inBullFVGz or inBullIFVGz) and not insideBearZone and not rawBuy and not rawRetestBuy
+potentialBear = (rawBearBlock or rawBearBlock_1 or inBearFVGz or inBearIFVGz) and not insideBullZone and not rawSell and not rawRetestSell
 
 var bool waitingForSell = false
 var bool waitingForBuy  = false
@@ -1913,6 +1940,11 @@ plotshape(showBacktestSig and isRetestSell,                title="SELL Retest", 
 plotshape(showBacktestSig and exitLong,                    title="Exit Long",   location=location.abovebar, style=shape.xcross,       color=color.new(color.orange, 0), size=size.tiny, text="X",   textcolor=color.new(color.orange, 0))
 plotshape(showBacktestSig and exitShort,                   title="Exit Short",  location=location.belowbar, style=shape.xcross,       color=color.new(color.orange, 0), size=size.tiny, text="X",   textcolor=color.new(color.orange, 0))
 
+// Potential signals — every raw zone touch that didn't pass the filter.
+// Small dots, no text, so chart stays readable. Toggle off with showPotential.
+plotshape(showPotential and potentialBull, title="Potential Buy",  location=location.belowbar, style=shape.circle, color=color.new(#00C853, 60), size=size.tiny)
+plotshape(showPotential and potentialBear, title="Potential Sell", location=location.abovebar, style=shape.circle, color=color.new(#F23645, 60), size=size.tiny)
+
 // Optional "BUY @ price" / "SELL @ price" detail labels
 if showBuySellText and btBuy
     label.new(bar_index, low - candleRange * 0.6,
@@ -1961,7 +1993,7 @@ plot(bearScore,                              title="Bear Score",        display=
 // ══════════════════════════════════════════════════════════════════════════════
 
 if showDash and barstate.islast
-    var table dash = table.new(dashPosition(), 2, 18,
+    var table dash = table.new(dashPosition(), 2, 19,
          bgcolor      = color.new(#1A1A2E, 10),
          border_color = color.new(color.gray, 60),
          border_width = 1,
@@ -2092,6 +2124,17 @@ if showDash and barstate.islast
                   + " | X:" + str.tostring(sigCountExitLong + sigCountExitShort)
         table.cell(dash, 0, 17, "Signal Count", text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
         table.cell(dash, 1, 17, countTxt,       text_color=color.new(color.white, 0), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+
+    // 18. Strictness — shows which filters are actively vetoing entries
+    strictTxt = sigStrictness +
+       (strictMode and not trendBull and not trendBear ? " (EMA?)" : "") +
+       (strictMode and not volOk ? " (VOL✗)" : "") +
+       (balMode and not trendBull and not trendBear and not volOk ? " (EMA+VOL✗)" : "")
+    strictColor = sigStrictness == "Strict" ? color.new(#FFA726, 0) :
+                  sigStrictness == "Permissive" ? color.new(#00C853, 0) :
+                  color.new(#00BCD4, 0)
+    table.cell(dash, 0, 18, "Strictness",  text_color=color.new(color.gray, 20), text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
+    table.cell(dash, 1, 18, strictTxt,     text_color=strictColor,               text_size=size.tiny, bgcolor=color.new(#2A2A3E, 10))
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ALERTS
