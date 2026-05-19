@@ -48,7 +48,9 @@ ifvgBullColor= input.color(color.new(#FF6D00, 78), "Bull IFVG",group=grpIFVG)
 ifvgBearColor= input.color(color.new(#AA00FF, 78), "Bear IFVG",group=grpIFVG)
 
 grpSIG = "📊 Signal Engine"
-minConfluence = input.int(3,    "Min Confluence Score (0-10)",  group=grpSIG, minval=0, maxval=10, step=1)
+minConfluence = input.int(1,    "Min Confluence Score (0-10)",  group=grpSIG, minval=0, maxval=10, step=1, tooltip="How many supporting factors needed. 1 = loose, 3+ = strict")
+sigCooldown   = input.int(3,    "Bars between same-direction signals", group=grpSIG, minval=0, maxval=50, tooltip="0 = signal every touch. 3 = wait 3 bars before another same-side signal")
+allowReentry  = input.bool(true,"Allow re-entry on retest",      group=grpSIG, tooltip="If ON, can re-enter same side after cooldown. If OFF, must alternate directions")
 showExit      = input.bool(true,"Show Exit Signals",            group=grpSIG)
 showRR        = input.bool(true,"Show R:R on Labels",           group=grpSIG)
 rrTarget      = input.float(2.0,"Target R:R Ratio",             group=grpSIG, minval=1.0, maxval=5.0, step=0.5)
@@ -106,9 +108,9 @@ adxLength    = input.int(14,     "ADX Length",                   group=grpADX, m
 adxThreshold = input.int(23,     "Trending Threshold",           group=grpADX, minval=10, maxval=50)
 
 grpVOL = "📊 Volume"
-volFilterOn = input.bool(true,  "Require Volume Confirmation",  group=grpVOL)
+volFilterOn = input.bool(false, "Require Volume Confirmation",  group=grpVOL, tooltip="Default OFF — many good touches happen on low volume bars")
 volLength   = input.int(20,     "Average Length",               group=grpVOL, minval=5,   maxval=100)
-volMult     = input.float(1.4,  "Min Volume Multiplier",        group=grpVOL, minval=1.0, maxval=5.0, step=0.1)
+volMult     = input.float(1.2,  "Min Volume Multiplier",        group=grpVOL, minval=1.0, maxval=5.0, step=0.1)
 
 grpSESS = "🕒 Sessions / Killzones"
 useSession   = input.bool(true,  "Use Session in confluence",    group=grpSESS)
@@ -116,7 +118,7 @@ showSessBG   = input.bool(true,  "Show Session Background",      group=grpSESS)
 asiaSess     = input.session("0000-0800", "Asian Session (UTC)", group=grpSESS)
 londonSess   = input.session("0700-1100", "London KZ (UTC)",    group=grpSESS)
 nySess       = input.session("1230-1600", "NY KZ (UTC)",        group=grpSESS)
-skipWeekend  = input.bool(true,  "Skip Weekend Signals",         group=grpSESS)
+skipWeekend  = input.bool(false, "Skip Weekend Signals",         group=grpSESS, tooltip="Crypto runs 24/7 — default OFF")
 
 grpATR = "📊 ATR (for SL/TP)"
 atrLength    = input.int(14,     "ATR Length",                   group=grpATR, minval=2,  maxval=50)
@@ -157,11 +159,12 @@ zoneNear(zH, zL) =>
         dist <= proxPct
 
 bullBodyIn(zH, zL) =>
-    bLo = math.min(open, close)
-    close > open and bLo <= zH and bLo >= zL
+    // Touch = wick or body enters the zone (not just bullish-closing body)
+    low <= zH and high >= zL
 
 bearBodyIn(zH, zL) =>
-    high >= zL and close < open and close < zH
+    // Touch = wick or body enters the zone
+    high >= zL and low <= zH
 
 zonesOverlap(aH, aL, bH, bL) =>
     aH >= bL and aL <= bH
@@ -1012,17 +1015,26 @@ MAX_CONF = 10
 rawBuy  = bullTrigger and bullConfluence >= minConfluence and volOk and goodTime and barstate.isconfirmed
 rawSell = bearTrigger and bearConfluence >= minConfluence and volOk and goodTime and barstate.isconfirmed
 
-// Alternating logic (don't fire same direction twice)
+// Cooldown logic: prevents spam but allows multiple signals in same direction
+var int lastBuyBar  = -9999
+var int lastSellBar = -9999
+
+cooldownOk(lastBar) =>
+    bar_index - lastBar >= sigCooldown
+
+// Direction lock (only used if allowReentry=false)
 var bool waitForSell = false
 var bool waitForBuy  = false
 
-buySignal  = rawBuy  and not waitForSell
-sellSignal = rawSell and not waitForBuy
+buySignal  = rawBuy  and cooldownOk(lastBuyBar)  and (allowReentry or not waitForSell)
+sellSignal = rawSell and cooldownOk(lastSellBar) and (allowReentry or not waitForBuy)
 
 if buySignal
+    lastBuyBar  := bar_index
     waitForSell := true
     waitForBuy  := false
 if sellSignal
+    lastSellBar := bar_index
     waitForBuy  := true
     waitForSell := false
 
