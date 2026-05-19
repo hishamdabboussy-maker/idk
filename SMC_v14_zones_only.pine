@@ -54,9 +54,15 @@ emaWidth    = input.int(2,      "EMA Width",              group=grpEMA, minval=1
 
 grpDisp = "⚙️ Display"
 extendBoxes = input.bool(true,  "Extend Boxes to Right",  group=grpDisp)
-showLabels  = input.bool(true,  "Show Zone Labels",       group=grpDisp)
 proxEnable  = input.bool(true,  "Hide Distant Zones",     group=grpDisp)
 proxPct     = input.float(2.0,  "Max Distance from Price (%)", group=grpDisp, minval=0.5, maxval=10.0, step=0.5)
+
+grpLbl = "🏷️ Labels (per type)"
+showOBLabels   = input.bool(true,  "Show OB labels",   group=grpLbl)
+showBBLabels   = input.bool(true,  "Show BB labels",   group=grpLbl)
+showRBLabels   = input.bool(true,  "Show RB labels",   group=grpLbl)
+showFVGLabels  = input.bool(false, "Show FVG labels",  group=grpLbl)
+showIFVGLabels = input.bool(false, "Show IFVG labels", group=grpLbl)
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
@@ -133,7 +139,7 @@ if showOB and bullBOS
     array.push(obBullMitig, false)
     array.push(obBullHi, oH)
     array.push(obBullLo, oL)
-    if showLabels
+    if showOBLabels
         label.new(oB, oH, "OB", style=label.style_label_down, color=obBullColor, textcolor=color.white, size=size.tiny)
 
 if showOB and bearBOS
@@ -155,7 +161,7 @@ if showOB and bearBOS
     array.push(obBearMitig, false)
     array.push(obBearHi, oH)
     array.push(obBearLo, oL)
-    if showLabels
+    if showOBLabels
         label.new(oB, oL, "OB", style=label.style_label_up, color=obBearColor, textcolor=color.white, size=size.tiny)
 
 // OB Mitigation
@@ -220,7 +226,7 @@ if showBB and showOB
                     array.push(bbBearLo, oL)
                     array.push(bbBearMitig, false)
                     array.push(bbBearSpawnedH, oH)
-                    if showLabels
+                    if showBBLabels
                         label.new(bar_index, oH, "BB", style=label.style_label_down, color=bbBearColor, textcolor=color.white, size=size.tiny)
 
     if array.size(obBearBoxes) > 0
@@ -240,7 +246,7 @@ if showBB and showOB
                     array.push(bbBullLo, oL)
                     array.push(bbBullMitig, false)
                     array.push(bbBullSpawnedH, oH)
-                    if showLabels
+                    if showBBLabels
                         label.new(bar_index, oL, "BB", style=label.style_label_up, color=bbBullColor, textcolor=color.white, size=size.tiny)
 
 // BB Mitigation
@@ -286,7 +292,7 @@ if showRB and isBullRB
     array.push(rbBullMitig, false)
     array.push(rbBullHi, high)
     array.push(rbBullLo, low)
-    if showLabels
+    if showRBLabels
         label.new(bar_index, low, "RB", style=label.style_label_up, color=rbBullColor, textcolor=color.white, size=size.tiny)
 
 if showRB and isBearRB
@@ -300,7 +306,7 @@ if showRB and isBearRB
     array.push(rbBearMitig, false)
     array.push(rbBearHi, high)
     array.push(rbBearLo, low)
-    if showLabels
+    if showRBLabels
         label.new(bar_index, high, "RB", style=label.style_label_down, color=rbBearColor, textcolor=color.white, size=size.tiny)
 
 if showRB and array.size(rbBullBoxes) > 0
@@ -357,6 +363,8 @@ if showFVG and isBullFVG
     if showFVGMid
         l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 60), style=line.style_dashed, extend=extRight)
         array.push(fvgBullLines, l)
+    if showFVGLabels
+        label.new(bar_index, gB, "FVG", style=label.style_label_up, color=fvgBullColor, textcolor=color.white, size=size.tiny)
 
 if showFVG and isBearFVG
     while array.size(fvgBearBoxes) >= fvgMaxBoxes
@@ -376,6 +384,8 @@ if showFVG and isBearFVG
     if showFVGMid
         l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 60), style=line.style_dashed, extend=extRight)
         array.push(fvgBearLines, l)
+    if showFVGLabels
+        label.new(bar_index, gT, "FVG", style=label.style_label_down, color=fvgBearColor, textcolor=color.white, size=size.tiny)
 
 // FVG mitigation
 if showFVG and array.size(fvgBullBoxes) > 0
@@ -454,7 +464,7 @@ if showIFVG
             array.push(ifvgBullBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBullColor, border_color=ifvgBullColor, extend=extRight))
             array.push(ifvgBullTop, t)
             array.push(ifvgBullBot, b2)
-            if showLabels
+            if showIFVGLabels
                 label.new(bar_index, b2, "IFVG", style=label.style_label_up, color=ifvgBullColor, textcolor=color.white, size=size.tiny)
             array.remove(pendBullTop, idx)
             array.remove(pendBullBot, idx)
@@ -476,7 +486,7 @@ if showIFVG
             array.push(ifvgBearBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBearColor, border_color=ifvgBearColor, extend=extRight))
             array.push(ifvgBearTop, t)
             array.push(ifvgBearBot, b2)
-            if showLabels
+            if showIFVGLabels
                 label.new(bar_index, t, "IFVG", style=label.style_label_down, color=ifvgBearColor, textcolor=color.white, size=size.tiny)
             array.remove(pendBearTop, idx2)
             array.remove(pendBearBot, idx2)
