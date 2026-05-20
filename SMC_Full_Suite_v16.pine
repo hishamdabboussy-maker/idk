@@ -1,5 +1,5 @@
 //@version=5
-indicator("SMC v16.2 — Tiered Signals (★★★/★★/★)", overlay=true, max_boxes_count=500, max_lines_count=200, max_labels_count=500)
+indicator("SMC v16.3 — Tiered Signals + Chop Filter + Dashboard", overlay=true, max_boxes_count=500, max_lines_count=200, max_labels_count=500)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  v16.2 — Tiered signal system. Every quality combination is independently
@@ -772,6 +772,38 @@ if showLIQ and array.size(liqLowLevels) > 0
                 break
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  CHOP FILTER — block signals when market is range-bound / no trend
+//  Two independent detectors (each toggleable):
+//    • Choppiness Index (Dreiss)  > threshold  → choppy
+//    • ADX                        < threshold  → no trend
+//  Either firing flips the global isChoppy flag. The signal engine then
+//  refuses to fire BUY/SELL while isChoppy is true.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpCHOP = "🌊 Chop Filter"
+chopEnable    = input.bool(true,  "Block signals in chop", group=grpCHOP,
+     tooltip="When ON, BUY/SELL signals are suppressed while either chop detector is active. Zones, EQH/EQL and other drawings still render normally.")
+chopUseCI     = input.bool(true,  "Use Choppiness Index",  group=grpCHOP)
+ciLength      = input.int(14,     "CI Length",             group=grpCHOP, minval=2, maxval=50)
+ciThreshold   = input.float(61.8, "CI choppy threshold",   group=grpCHOP, minval=30, maxval=80, step=0.5,
+     tooltip=">= this value = choppy. 61.8 is the classic Dreiss Fibonacci threshold. Higher = stricter (only flags very tight ranges).")
+chopUseADX    = input.bool(true,  "Use ADX (weak trend)",  group=grpCHOP)
+adxLengthIn   = input.int(14,     "ADX Length",            group=grpCHOP, minval=2, maxval=50)
+adxThresholdIn= input.float(18.0, "ADX choppy threshold",  group=grpCHOP, minval=10, maxval=40, step=0.5,
+     tooltip="<= this value = no trend. ADX < 20 typically means range-bound. Set lower (e.g. 14) to allow more signals in weak trends.")
+
+// Choppiness Index: 100 * log10( sum(TR, n) / (highest(High,n) - lowest(Low,n)) ) / log10(n)
+ciHL = ta.highest(high, ciLength) - ta.lowest(low, ciLength)
+ciVal = ciHL > 0 ? 100 * math.log10(math.sum(ta.tr, ciLength) / ciHL) / math.log10(ciLength) : 50.0
+
+// ADX from built-in DMI
+[diPlus, diMinus, adxVal] = ta.dmi(adxLengthIn, adxLengthIn)
+
+choppyByCI  = chopUseCI  and ciVal  >= ciThreshold
+choppyByADX = chopUseADX and adxVal <= adxThresholdIn
+isChoppy    = chopEnable and (choppyByCI or choppyByADX)
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  SIGNAL ENGINE — Tiered system. Toggle each combination independently.
 //
 //  Tier ★★★ PREMIUM  : zone reaction + EMA trend + fresh + body
@@ -806,6 +838,8 @@ sigSweepWindow = input.int(15, "Sweep window for Tier ★★ (bars)", group=grpT
 grpDIR = "📊 Signals — Direction"
 sigShowLongs  = input.bool(true,  "Show LONG signals",  group=grpDIR)
 sigShowShorts = input.bool(true,  "Show SHORT signals", group=grpDIR)
+sigNoSameDir  = input.bool(false, "Block same-direction repeats", group=grpDIR,
+     tooltip="When ON, after a BUY fires no further BUY signals fire until a SELL fires (and vice versa). Prevents stacking entries in the same direction — useful for swing trading where you want one position at a time.")
 
 // ── Zone source toggles ───────────────────────────────────────────────────────
 grpSRC = "📊 Signals — Zone Sources"
@@ -946,14 +980,23 @@ if sigSourceIFVG and array.size(ifvgBearBoxes) > 0
 // ── Cooldown gate ─────────────────────────────────────────────────────────────
 var int lastBuyBar  = -9999
 var int lastSellBar = -9999
+var int lastFireDir = 0  // +1 = last fire was BUY, -1 = SELL, 0 = none
 
-buyReady  = sigShowLongs  and barstate.isconfirmed and buyTier  != 0 and (bar_index - lastBuyBar)  >= sigCooldown
-sellReady = sigShowShorts and barstate.isconfirmed and sellTier != 0 and (bar_index - lastSellBar) >= sigCooldown
+// Same-direction lockout: when sigNoSameDir is ON, a BUY can only fire after
+// a SELL has fired since the last BUY (and vice versa). First signal of either
+// direction is always allowed.
+buyDirOK  = (not sigNoSameDir) or lastFireDir != 1
+sellDirOK = (not sigNoSameDir) or lastFireDir != -1
+
+buyReady  = sigShowLongs  and barstate.isconfirmed and buyTier  != 0 and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK
+sellReady = sigShowShorts and barstate.isconfirmed and sellTier != 0 and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK
 
 if buyReady
-    lastBuyBar := bar_index
+    lastBuyBar  := bar_index
+    lastFireDir := 1
 if sellReady
     lastSellBar := bar_index
+    lastFireDir := -1
 
 // Per-tier, per-direction triggers (used for plotshape & alerts)
 buyT1Fire = buyReady and buyTier == 1
@@ -1017,3 +1060,105 @@ alertcondition(buyT3Fire,   "BUY ★ Loose",      "▲ BUY Loose — Body reacti
 alertcondition(sellT1Fire,  "SELL ★★★ Premium", "▼ SELL Premium — Trend + fresh + body reaction")
 alertcondition(sellT2Fire,  "SELL ★★ Reversal", "▼ SELL Reversal — Sweep + body reaction")
 alertcondition(sellT3Fire,  "SELL ★ Loose",     "▼ SELL Loose — Body reaction")
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DASHBOARD — market condition status panel
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpDASH = "📊 Dashboard"
+showDashboard  = input.bool(true,  "Show Dashboard",   group=grpDASH)
+dashPositionIn = input.string("top_right", "Position", group=grpDASH,
+     options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+dashSizeIn     = input.string("small", "Text Size",    group=grpDASH,
+     options=["tiny","small","normal","large"])
+
+dashPos = dashPositionIn == "top_right"     ? position.top_right     :
+          dashPositionIn == "top_left"      ? position.top_left      :
+          dashPositionIn == "middle_right"  ? position.middle_right  :
+          dashPositionIn == "middle_left"   ? position.middle_left   :
+          dashPositionIn == "bottom_right"  ? position.bottom_right  :
+          position.bottom_left
+
+dashSz  = dashSizeIn == "tiny"   ? size.tiny   :
+          dashSizeIn == "small"  ? size.small  :
+          dashSizeIn == "large"  ? size.large  :
+          size.normal
+
+// Track last fired signal for display
+var string lastSigText  = "—"
+var color  lastSigColor = color.gray
+
+if buyReady
+    lastSigText  := "BUY " + buySource + " " + tierStars(buyTier)
+    lastSigColor := buyTier == 1 ? color.new(#00C853, 0) : buyTier == 2 ? color.new(#00BCD4, 0) : color.new(#9E9E9E, 0)
+if sellReady
+    lastSigText  := "SELL " + sellSource + " " + tierStars(sellTier)
+    lastSigColor := sellTier == 1 ? color.new(#F23645, 0) : sellTier == 2 ? color.new(#FF6D00, 0) : color.new(#9E9E9E, 0)
+
+var table dashTable = table.new(dashPos, 2, 9,
+     bgcolor=color.new(#0A0A0A, 10),
+     border_width=1, frame_color=color.new(color.gray, 50), frame_width=1,
+     border_color=color.new(color.gray, 70))
+
+if showDashboard and barstate.islast
+    headerBg = color.new(#1A1A2E, 0)
+
+    // Row 0 — header
+    table.cell(dashTable, 0, 0, "SMC v16.3",     text_color=color.white, bgcolor=headerBg, text_size=dashSz)
+    table.cell(dashTable, 1, 0, "Tiered Signals", text_color=color.new(color.gray, 0), bgcolor=headerBg, text_size=size.tiny)
+
+    // Row 1 — Status (the headline)
+    statusTxt = isChoppy ? "🔴 CHOP — NO TRADE" : "🟢 TRADING OK"
+    statusBg  = isChoppy ? color.new(#F23645, 60) : color.new(#00C853, 60)
+    table.cell(dashTable, 0, 1, "Status",   text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 1, statusTxt,  text_color=color.white, bgcolor=statusBg, text_size=dashSz)
+
+    // Row 2 — Trend
+    trendTxt = trendBull ? "▲ BULL" : trendBear ? "▼ BEAR" : "—"
+    trendCol = trendBull ? color.new(#00C853, 0) : trendBear ? color.new(#F23645, 0) : color.gray
+    table.cell(dashTable, 0, 2, "Trend (EMA200)", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 2, trendTxt,         text_color=trendCol,    text_size=dashSz)
+
+    // Row 3 — Choppiness Index
+    ciStr = str.tostring(ciVal, "#.0") + (choppyByCI ? "  ⚠ chop" : "  ✓")
+    ciCol = choppyByCI ? color.new(#FF6D00, 0) : color.new(#00C853, 0)
+    table.cell(dashTable, 0, 3, "Chop Idx (>" + str.tostring(ciThreshold, "#.0") + ")", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 3, ciStr, text_color=ciCol, text_size=dashSz)
+
+    // Row 4 — ADX
+    adxStr = str.tostring(adxVal, "#.0") + (choppyByADX ? "  ⚠ no trend" : "  ✓")
+    adxCol = choppyByADX ? color.new(#FF6D00, 0) : color.new(#00C853, 0)
+    table.cell(dashTable, 0, 4, "ADX (<" + str.tostring(adxThresholdIn, "#.0") + ")", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 4, adxStr, text_color=adxCol, text_size=dashSz)
+
+    // Row 5 — Recent liquidity sweeps
+    eqlAge = bar_index - lastEQLSweepBar
+    eqhAge = bar_index - lastEQHSweepBar
+    sweepTxt = ""
+    if eqlAge <= sigSweepWindow
+        sweepTxt := "💧EQL " + str.tostring(eqlAge) + "b ago"
+    if eqhAge <= sigSweepWindow
+        sweepTxt := sweepTxt == "" ? "💧EQH " + str.tostring(eqhAge) + "b ago" : sweepTxt + " | EQH " + str.tostring(eqhAge) + "b"
+    if sweepTxt == ""
+        sweepTxt := "—"
+    table.cell(dashTable, 0, 5, "Recent Sweep", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 5, sweepTxt, text_color=color.new(#00BCD4, 0), text_size=dashSz)
+
+    // Row 6 — active tiers
+    tierTxt = (sigT1Enable ? "★★★ " : "") + (sigT2Enable ? "★★ " : "") + (sigT3Enable ? "★" : "")
+    if tierTxt == ""
+        tierTxt := "—"
+    table.cell(dashTable, 0, 6, "Active Tiers", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 6, tierTxt, text_color=color.new(color.yellow, 0), text_size=dashSz)
+
+    // Row 7 — cooldowns (per direction)
+    longCD  = math.max(0, sigCooldown - (bar_index - lastBuyBar))
+    shortCD = math.max(0, sigCooldown - (bar_index - lastSellBar))
+    cdTxt = "L:" + (longCD == 0 ? "✓" : str.tostring(longCD)) + "  S:" + (shortCD == 0 ? "✓" : str.tostring(shortCD))
+    table.cell(dashTable, 0, 7, "Cooldown",  text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 7, cdTxt,       text_color=color.new(color.gray, 0), text_size=dashSz)
+
+    // Row 8 — last fired signal
+    table.cell(dashTable, 0, 8, "Last Signal", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 8, lastSigText,   text_color=lastSigColor, text_size=dashSz)
