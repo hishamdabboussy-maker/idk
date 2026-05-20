@@ -1,0 +1,591 @@
+//@version=5
+indicator("SMC v14 — Zones Only (15m)", overlay=true, max_boxes_count=500, max_lines_count=100, max_labels_count=200)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  v14 — Pure zone visualization for 15m. No signals, no confluence, no spam.
+//  Only: OB, BB, RB, FVG, IFVG, EMA200
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── INPUTS ────────────────────────────────────────────────────────────────────
+
+grpOB = "🟦 Order Blocks"
+showOB      = input.bool(true,  "Show Order Blocks",      group=grpOB)
+obLookback  = input.int(5,      "Swing Lookback",         group=grpOB, minval=3, maxval=30)
+obMaxBoxes  = input.int(4,      "Max OBs per side",       group=grpOB, minval=1, maxval=10)
+obHideMitig = input.bool(true,  "Hide Mitigated OBs",     group=grpOB)
+obMitigMode = input.string("Close", "Mitigation by", group=grpOB, options=["Wick","Close"])
+obBullColor = input.color(color.new(#2962FF, 75), "Bull OB", group=grpOB)
+obBearColor = input.color(color.new(#F23645, 75), "Bear OB", group=grpOB)
+
+grpBB = "🔴 Breaker Blocks"
+showBB      = input.bool(true,  "Show Breaker Blocks",    group=grpBB)
+bbMaxBoxes  = input.int(3,      "Max BBs per side",       group=grpBB, minval=1, maxval=10)
+bbBullColor = input.color(color.new(#26A69A, 70), "Bull BB", group=grpBB)
+bbBearColor = input.color(color.new(#EF5350, 70), "Bear BB", group=grpBB)
+
+grpRB = "🟣 Rejection Blocks"
+showRB      = input.bool(true,  "Show Rejection Blocks",  group=grpRB)
+rbWickRatio = input.float(0.6,  "Min Wick/Range Ratio",   group=grpRB, minval=0.4, maxval=0.9, step=0.05)
+rbMaxBoxes  = input.int(3,      "Max RBs per side",       group=grpRB, minval=1, maxval=10)
+rbHideMitig = input.bool(true,  "Hide Mitigated RBs",     group=grpRB)
+rbBullColor = input.color(color.new(#00BCD4, 70), "Bull RB", group=grpRB)
+rbBearColor = input.color(color.new(#FF6D00, 70), "Bear RB", group=grpRB)
+
+grpFVG = "🟩 Fair Value Gaps"
+showFVG     = input.bool(true,  "Show FVGs",              group=grpFVG)
+fvgMinSize  = input.float(0.05, "Min Gap % (0=any)",      group=grpFVG, minval=0.0, maxval=2.0, step=0.01)
+fvgMaxBoxes = input.int(4,      "Max FVGs per side",      group=grpFVG, minval=1, maxval=10)
+showFVGMid  = input.bool(false, "Show Midline",           group=grpFVG)
+fvgBullColor= input.color(color.new(#00C853, 80), "Bull FVG", group=grpFVG)
+fvgBearColor= input.color(color.new(#FF1744, 80), "Bear FVG", group=grpFVG)
+
+grpIFVG = "🟧 Inverse FVGs"
+showIFVG     = input.bool(true,  "Show IFVGs",            group=grpIFVG)
+ifvgStrict   = input.bool(true,  "Require Close Inside",  group=grpIFVG)
+ifvgMaxBoxes = input.int(3,      "Max IFVGs per side",    group=grpIFVG, minval=1, maxval=10)
+ifvgBullColor= input.color(color.new(#FF6D00, 80), "Bull IFVG", group=grpIFVG)
+ifvgBearColor= input.color(color.new(#AA00FF, 80), "Bear IFVG", group=grpIFVG)
+
+grpEMA = "📉 EMA"
+showEMA     = input.bool(true,  "Show EMA",               group=grpEMA)
+emaLength   = input.int(200,    "EMA Length",             group=grpEMA, minval=10, maxval=500)
+emaColor    = input.color(color.new(color.yellow, 30), "EMA Color", group=grpEMA)
+emaWidth    = input.int(2,      "EMA Width",              group=grpEMA, minval=1, maxval=4)
+
+grpDisp = "⚙️ Display"
+extendBoxes = input.bool(true,  "Extend Boxes to Right",  group=grpDisp)
+proxEnable  = input.bool(true,  "Hide Distant Zones",     group=grpDisp)
+proxPct     = input.float(2.0,  "Max Distance from Price (%)", group=grpDisp, minval=0.5, maxval=10.0, step=0.5)
+
+grpLbl = "🏷️ Labels (per type)"
+showOBLabels   = input.bool(true,  "Show OB labels",   group=grpLbl)
+showBBLabels   = input.bool(true,  "Show BB labels",   group=grpLbl)
+showRBLabels   = input.bool(true,  "Show RB labels",   group=grpLbl)
+showFVGLabels  = input.bool(false, "Show FVG labels",  group=grpLbl)
+showIFVGLabels = input.bool(false, "Show IFVG labels", group=grpLbl)
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+
+extRight    = extendBoxes ? extend.right : extend.none
+candleRange = high - low
+bodyHigh    = math.max(open, close)
+bodyLow     = math.min(open, close)
+upperWick   = high - bodyHigh
+lowerWick   = bodyLow - low
+
+zoneNear(zH, zL) =>
+    if not proxEnable
+        true
+    else
+        midZ = math.avg(zH, zL)
+        math.abs(close - midZ) / close * 100.0 <= proxPct
+
+// ── EMA ───────────────────────────────────────────────────────────────────────
+
+ema = ta.ema(close, emaLength)
+plot(showEMA ? ema : na, "EMA", color=emaColor, linewidth=emaWidth)
+
+// ── BOS DETECTION (needed for OB/BB) ──────────────────────────────────────────
+
+ph = ta.pivothigh(high, obLookback, obLookback)
+pl = ta.pivotlow(low,   obLookback, obLookback)
+
+var float lastPH = na
+var float lastPL = na
+
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+
+bullBOS = not na(lastPH) and close > lastPH and close[1] <= lastPH
+bearBOS = not na(lastPL) and close < lastPL and close[1] >= lastPL
+
+if bullBOS
+    lastPH := na
+if bearBOS
+    lastPL := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ORDER BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var obBullBoxes = array.new_box()
+var obBullMitig = array.new_bool()
+var obBullHi    = array.new_float()
+var obBullLo    = array.new_float()
+
+var obBearBoxes = array.new_box()
+var obBearMitig = array.new_bool()
+var obBearHi    = array.new_float()
+var obBearLo    = array.new_float()
+
+if showOB and bullBOS
+    obIdx = 1
+    for k = 1 to math.min(obLookback * 2, 50)
+        if close[k] < open[k]
+            obIdx := k
+            break
+    oH = high[obIdx]
+    oL = low[obIdx]
+    oB = bar_index - obIdx
+    while array.size(obBullBoxes) >= obMaxBoxes
+        box.delete(array.shift(obBullBoxes))
+        array.shift(obBullMitig)
+        array.shift(obBullHi)
+        array.shift(obBullLo)
+    b = box.new(oB, oH, bar_index, oL, bgcolor=obBullColor, border_color=obBullColor, extend=extRight)
+    array.push(obBullBoxes, b)
+    array.push(obBullMitig, false)
+    array.push(obBullHi, oH)
+    array.push(obBullLo, oL)
+    if showOBLabels
+        label.new(oB, oH, "OB", style=label.style_label_down, color=obBullColor, textcolor=color.white, size=size.tiny)
+
+if showOB and bearBOS
+    obIdx = 1
+    for k = 1 to math.min(obLookback * 2, 50)
+        if close[k] > open[k]
+            obIdx := k
+            break
+    oH = high[obIdx]
+    oL = low[obIdx]
+    oB = bar_index - obIdx
+    while array.size(obBearBoxes) >= obMaxBoxes
+        box.delete(array.shift(obBearBoxes))
+        array.shift(obBearMitig)
+        array.shift(obBearHi)
+        array.shift(obBearLo)
+    b = box.new(oB, oH, bar_index, oL, bgcolor=obBearColor, border_color=obBearColor, extend=extRight)
+    array.push(obBearBoxes, b)
+    array.push(obBearMitig, false)
+    array.push(obBearHi, oH)
+    array.push(obBearLo, oL)
+    if showOBLabels
+        label.new(oB, oL, "OB", style=label.style_label_up, color=obBearColor, textcolor=color.white, size=size.tiny)
+
+// OB Mitigation
+if showOB and array.size(obBullBoxes) > 0
+    for i = 0 to array.size(obBullBoxes) - 1
+        if not array.get(obBullMitig, i)
+            mp = obMitigMode == "Wick" ? low : close
+            if mp < array.get(obBullLo, i)
+                if obHideMitig
+                    box.delete(array.get(obBullBoxes, i))
+                array.set(obBullMitig, i, true)
+
+if showOB and array.size(obBearBoxes) > 0
+    for i = 0 to array.size(obBearBoxes) - 1
+        if not array.get(obBearMitig, i)
+            mp = obMitigMode == "Wick" ? high : close
+            if mp > array.get(obBearHi, i)
+                if obHideMitig
+                    box.delete(array.get(obBearBoxes, i))
+                array.set(obBearMitig, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BREAKER BLOCKS (from mitigated OBs)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var bbBullBoxes = array.new_box()
+var bbBullHi    = array.new_float()
+var bbBullLo    = array.new_float()
+var bbBullMitig = array.new_bool()
+var bbBearBoxes = array.new_box()
+var bbBearHi    = array.new_float()
+var bbBearLo    = array.new_float()
+var bbBearMitig = array.new_bool()
+
+var bbBearSpawnedH = array.new_float()
+var bbBullSpawnedH = array.new_float()
+
+_alreadySpawned(arr, oH) =>
+    found = false
+    if array.size(arr) > 0
+        for k = 0 to array.size(arr) - 1
+            if math.abs(array.get(arr, k) - oH) / oH < 0.0005
+                found := true
+                break
+    found
+
+if showBB and showOB
+    if array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if array.get(obBullMitig, i)
+                oH = array.get(obBullHi, i)
+                oL = array.get(obBullLo, i)
+                if not _alreadySpawned(bbBearSpawnedH, oH)
+                    while array.size(bbBearBoxes) >= bbMaxBoxes
+                        box.delete(array.shift(bbBearBoxes))
+                        array.shift(bbBearHi)
+                        array.shift(bbBearLo)
+                        array.shift(bbBearMitig)
+                    bx = box.new(bar_index - 1, oH, bar_index, oL, bgcolor=bbBearColor, border_color=bbBearColor, extend=extRight)
+                    array.push(bbBearBoxes, bx)
+                    array.push(bbBearHi, oH)
+                    array.push(bbBearLo, oL)
+                    array.push(bbBearMitig, false)
+                    array.push(bbBearSpawnedH, oH)
+                    if showBBLabels
+                        label.new(bar_index, oH, "BB", style=label.style_label_down, color=bbBearColor, textcolor=color.white, size=size.tiny)
+
+    if array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if array.get(obBearMitig, i)
+                oH = array.get(obBearHi, i)
+                oL = array.get(obBearLo, i)
+                if not _alreadySpawned(bbBullSpawnedH, oH)
+                    while array.size(bbBullBoxes) >= bbMaxBoxes
+                        box.delete(array.shift(bbBullBoxes))
+                        array.shift(bbBullHi)
+                        array.shift(bbBullLo)
+                        array.shift(bbBullMitig)
+                    bx = box.new(bar_index - 1, oH, bar_index, oL, bgcolor=bbBullColor, border_color=bbBullColor, extend=extRight)
+                    array.push(bbBullBoxes, bx)
+                    array.push(bbBullHi, oH)
+                    array.push(bbBullLo, oL)
+                    array.push(bbBullMitig, false)
+                    array.push(bbBullSpawnedH, oH)
+                    if showBBLabels
+                        label.new(bar_index, oL, "BB", style=label.style_label_up, color=bbBullColor, textcolor=color.white, size=size.tiny)
+
+// BB Mitigation
+if showBB and array.size(bbBullBoxes) > 0
+    for i = 0 to array.size(bbBullBoxes) - 1
+        if not array.get(bbBullMitig, i)
+            if close < array.get(bbBullLo, i)
+                box.delete(array.get(bbBullBoxes, i))
+                array.set(bbBullMitig, i, true)
+
+if showBB and array.size(bbBearBoxes) > 0
+    for i = 0 to array.size(bbBearBoxes) - 1
+        if not array.get(bbBearMitig, i)
+            if close > array.get(bbBearHi, i)
+                box.delete(array.get(bbBearBoxes, i))
+                array.set(bbBearMitig, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  REJECTION BLOCKS (long-wick rejections at swing pivots)
+// ══════════════════════════════════════════════════════════════════════════════
+
+isBullRB = not na(lastPL) and low < lastPL and close > lastPL and candleRange > 0 and (lowerWick / candleRange >= rbWickRatio)
+isBearRB = not na(lastPH) and high > lastPH and close < lastPH and candleRange > 0 and (upperWick / candleRange >= rbWickRatio)
+
+var rbBullBoxes = array.new_box()
+var rbBullMitig = array.new_bool()
+var rbBullHi    = array.new_float()
+var rbBullLo    = array.new_float()
+
+var rbBearBoxes = array.new_box()
+var rbBearMitig = array.new_bool()
+var rbBearHi    = array.new_float()
+var rbBearLo    = array.new_float()
+
+if showRB and isBullRB
+    while array.size(rbBullBoxes) >= rbMaxBoxes
+        box.delete(array.shift(rbBullBoxes))
+        array.shift(rbBullMitig)
+        array.shift(rbBullHi)
+        array.shift(rbBullLo)
+    b = box.new(bar_index - 1, high, bar_index, low, bgcolor=rbBullColor, border_color=rbBullColor, extend=extRight)
+    array.push(rbBullBoxes, b)
+    array.push(rbBullMitig, false)
+    array.push(rbBullHi, high)
+    array.push(rbBullLo, low)
+    if showRBLabels
+        label.new(bar_index, low, "RB", style=label.style_label_up, color=rbBullColor, textcolor=color.white, size=size.tiny)
+
+if showRB and isBearRB
+    while array.size(rbBearBoxes) >= rbMaxBoxes
+        box.delete(array.shift(rbBearBoxes))
+        array.shift(rbBearMitig)
+        array.shift(rbBearHi)
+        array.shift(rbBearLo)
+    b = box.new(bar_index - 1, high, bar_index, low, bgcolor=rbBearColor, border_color=rbBearColor, extend=extRight)
+    array.push(rbBearBoxes, b)
+    array.push(rbBearMitig, false)
+    array.push(rbBearHi, high)
+    array.push(rbBearLo, low)
+    if showRBLabels
+        label.new(bar_index, high, "RB", style=label.style_label_down, color=rbBearColor, textcolor=color.white, size=size.tiny)
+
+if showRB and array.size(rbBullBoxes) > 0
+    for i = 0 to array.size(rbBullBoxes) - 1
+        if not array.get(rbBullMitig, i)
+            if close < array.get(rbBullLo, i)
+                if rbHideMitig
+                    box.delete(array.get(rbBullBoxes, i))
+                array.set(rbBullMitig, i, true)
+
+if showRB and array.size(rbBearBoxes) > 0
+    for i = 0 to array.size(rbBearBoxes) - 1
+        if not array.get(rbBearMitig, i)
+            if close > array.get(rbBearHi, i)
+                if rbHideMitig
+                    box.delete(array.get(rbBearBoxes, i))
+                array.set(rbBearMitig, i, true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FAIR VALUE GAPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+minGapVal = close * fvgMinSize / 100.0
+isBullFVG = (low - high[2]) > minGapVal
+isBearFVG = (low[2] - high) > minGapVal
+
+var fvgBullBoxes = array.new_box()
+var fvgBullLines = array.new_line()
+var fvgBullTop   = array.new_float()
+var fvgBullBot   = array.new_float()
+var fvgBullDead  = array.new_bool()
+
+var fvgBearBoxes = array.new_box()
+var fvgBearLines = array.new_line()
+var fvgBearTop   = array.new_float()
+var fvgBearBot   = array.new_float()
+var fvgBearDead  = array.new_bool()
+
+if showFVG and isBullFVG
+    while array.size(fvgBullBoxes) >= fvgMaxBoxes
+        box.delete(array.shift(fvgBullBoxes))
+        if array.size(fvgBullLines) > 0
+            line.delete(array.shift(fvgBullLines))
+        array.shift(fvgBullTop)
+        array.shift(fvgBullBot)
+        array.shift(fvgBullDead)
+    gT = low
+    gB = high[2]
+    bx = box.new(bar_index[2], gT, bar_index, gB, bgcolor=fvgBullColor, border_color=fvgBullColor, extend=extRight)
+    array.push(fvgBullBoxes, bx)
+    array.push(fvgBullTop, gT)
+    array.push(fvgBullBot, gB)
+    array.push(fvgBullDead, false)
+    if showFVGMid
+        l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 60), style=line.style_dashed, extend=extRight)
+        array.push(fvgBullLines, l)
+    if showFVGLabels
+        label.new(bar_index, gB, "FVG", style=label.style_label_up, color=fvgBullColor, textcolor=color.white, size=size.tiny)
+
+if showFVG and isBearFVG
+    while array.size(fvgBearBoxes) >= fvgMaxBoxes
+        box.delete(array.shift(fvgBearBoxes))
+        if array.size(fvgBearLines) > 0
+            line.delete(array.shift(fvgBearLines))
+        array.shift(fvgBearTop)
+        array.shift(fvgBearBot)
+        array.shift(fvgBearDead)
+    gT = low[2]
+    gB = high
+    bx = box.new(bar_index[2], gT, bar_index, gB, bgcolor=fvgBearColor, border_color=fvgBearColor, extend=extRight)
+    array.push(fvgBearBoxes, bx)
+    array.push(fvgBearTop, gT)
+    array.push(fvgBearBot, gB)
+    array.push(fvgBearDead, false)
+    if showFVGMid
+        l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 60), style=line.style_dashed, extend=extRight)
+        array.push(fvgBearLines, l)
+    if showFVGLabels
+        label.new(bar_index, gT, "FVG", style=label.style_label_down, color=fvgBearColor, textcolor=color.white, size=size.tiny)
+
+// FVG mitigation
+if showFVG and array.size(fvgBullBoxes) > 0
+    idxR = array.size(fvgBullBoxes) - 1
+    while idxR >= 0
+        if not array.get(fvgBullDead, idxR)
+            gB = array.get(fvgBullBot, idxR)
+            if close < gB and open < gB
+                box.delete(array.get(fvgBullBoxes, idxR))
+                if idxR < array.size(fvgBullLines)
+                    line.delete(array.get(fvgBullLines, idxR))
+                array.set(fvgBullDead, idxR, true)
+        idxR -= 1
+
+if showFVG and array.size(fvgBearBoxes) > 0
+    idxR = array.size(fvgBearBoxes) - 1
+    while idxR >= 0
+        if not array.get(fvgBearDead, idxR)
+            gT = array.get(fvgBearTop, idxR)
+            if close > gT and open > gT
+                box.delete(array.get(fvgBearBoxes, idxR))
+                if idxR < array.size(fvgBearLines)
+                    line.delete(array.get(fvgBearLines, idxR))
+                array.set(fvgBearDead, idxR, true)
+        idxR -= 1
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  INVERSE FVGs
+// ══════════════════════════════════════════════════════════════════════════════
+
+var pendBullTop = array.new_float()
+var pendBullBot = array.new_float()
+var pendBullBar = array.new_int()
+var pendBearTop = array.new_float()
+var pendBearBot = array.new_float()
+var pendBearBar = array.new_int()
+var ifvgBullBoxes = array.new_box()
+var ifvgBullTop   = array.new_float()
+var ifvgBullBot   = array.new_float()
+var ifvgBearBoxes = array.new_box()
+var ifvgBearTop   = array.new_float()
+var ifvgBearBot   = array.new_float()
+
+MAX_PEND = ifvgMaxBoxes * 2
+
+if showIFVG
+    if isBullFVG
+        if array.size(pendBullTop) >= MAX_PEND
+            array.shift(pendBullTop)
+            array.shift(pendBullBot)
+            array.shift(pendBullBar)
+        array.push(pendBullTop, low)
+        array.push(pendBullBot, high[2])
+        array.push(pendBullBar, bar_index[2])
+
+    if isBearFVG
+        if array.size(pendBearTop) >= MAX_PEND
+            array.shift(pendBearTop)
+            array.shift(pendBearBot)
+            array.shift(pendBearBar)
+        array.push(pendBearTop, low[2])
+        array.push(pendBearBot, high)
+        array.push(pendBearBar, bar_index[2])
+
+    idx = 0
+    while idx < array.size(pendBullTop)
+        t  = array.get(pendBullTop, idx)
+        b2 = array.get(pendBullBot, idx)
+        sB = array.get(pendBullBar, idx)
+        hit = ifvgStrict ? (close <= t and close >= b2) : (low <= t and high >= b2)
+        if hit
+            while array.size(ifvgBullBoxes) >= ifvgMaxBoxes
+                box.delete(array.shift(ifvgBullBoxes))
+                array.shift(ifvgBullTop)
+                array.shift(ifvgBullBot)
+            array.push(ifvgBullBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBullColor, border_color=ifvgBullColor, extend=extRight))
+            array.push(ifvgBullTop, t)
+            array.push(ifvgBullBot, b2)
+            if showIFVGLabels
+                label.new(bar_index, b2, "IFVG", style=label.style_label_up, color=ifvgBullColor, textcolor=color.white, size=size.tiny)
+            array.remove(pendBullTop, idx)
+            array.remove(pendBullBot, idx)
+            array.remove(pendBullBar, idx)
+        else
+            idx += 1
+
+    idx2 = 0
+    while idx2 < array.size(pendBearTop)
+        t  = array.get(pendBearTop, idx2)
+        b2 = array.get(pendBearBot, idx2)
+        sB = array.get(pendBearBar, idx2)
+        hit = ifvgStrict ? (close <= t and close >= b2) : (low <= t and high >= b2)
+        if hit
+            while array.size(ifvgBearBoxes) >= ifvgMaxBoxes
+                box.delete(array.shift(ifvgBearBoxes))
+                array.shift(ifvgBearTop)
+                array.shift(ifvgBearBot)
+            array.push(ifvgBearBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBearColor, border_color=ifvgBearColor, extend=extRight))
+            array.push(ifvgBearTop, t)
+            array.push(ifvgBearBot, b2)
+            if showIFVGLabels
+                label.new(bar_index, t, "IFVG", style=label.style_label_down, color=ifvgBearColor, textcolor=color.white, size=size.tiny)
+            array.remove(pendBearTop, idx2)
+            array.remove(pendBearBot, idx2)
+            array.remove(pendBearBar, idx2)
+        else
+            idx2 += 1
+
+// IFVG mitigation
+if showIFVG and array.size(ifvgBullBoxes) > 0
+    idxR = array.size(ifvgBullBoxes) - 1
+    while idxR >= 0
+        gB = array.get(ifvgBullBot, idxR)
+        if close < gB and open < gB
+            box.delete(array.get(ifvgBullBoxes, idxR))
+            array.remove(ifvgBullBoxes, idxR)
+            array.remove(ifvgBullTop, idxR)
+            array.remove(ifvgBullBot, idxR)
+        idxR -= 1
+
+if showIFVG and array.size(ifvgBearBoxes) > 0
+    idxR = array.size(ifvgBearBoxes) - 1
+    while idxR >= 0
+        gT = array.get(ifvgBearTop, idxR)
+        if close > gT and open > gT
+            box.delete(array.get(ifvgBearBoxes, idxR))
+            array.remove(ifvgBearBoxes, idxR)
+            array.remove(ifvgBearTop, idxR)
+            array.remove(ifvgBearBot, idxR)
+        idxR -= 1
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PROXIMITY VISIBILITY (hide far zones)
+// ══════════════════════════════════════════════════════════════════════════════
+
+if proxEnable and barstate.isconfirmed
+    if showOB and array.size(obBullBoxes) > 0
+        for i = 0 to array.size(obBullBoxes) - 1
+            if not array.get(obBullMitig, i)
+                near = zoneNear(array.get(obBullHi, i), array.get(obBullLo, i))
+                box.set_bgcolor(array.get(obBullBoxes, i), near ? obBullColor : color.new(obBullColor, 100))
+                box.set_border_color(array.get(obBullBoxes, i), near ? obBullColor : color.new(obBullColor, 100))
+    if showOB and array.size(obBearBoxes) > 0
+        for i = 0 to array.size(obBearBoxes) - 1
+            if not array.get(obBearMitig, i)
+                near = zoneNear(array.get(obBearHi, i), array.get(obBearLo, i))
+                box.set_bgcolor(array.get(obBearBoxes, i), near ? obBearColor : color.new(obBearColor, 100))
+                box.set_border_color(array.get(obBearBoxes, i), near ? obBearColor : color.new(obBearColor, 100))
+    if showBB and array.size(bbBullBoxes) > 0
+        for i = 0 to array.size(bbBullBoxes) - 1
+            near = zoneNear(array.get(bbBullHi, i), array.get(bbBullLo, i))
+            box.set_bgcolor(array.get(bbBullBoxes, i), near ? bbBullColor : color.new(bbBullColor, 100))
+            box.set_border_color(array.get(bbBullBoxes, i), near ? bbBullColor : color.new(bbBullColor, 100))
+    if showBB and array.size(bbBearBoxes) > 0
+        for i = 0 to array.size(bbBearBoxes) - 1
+            near = zoneNear(array.get(bbBearHi, i), array.get(bbBearLo, i))
+            box.set_bgcolor(array.get(bbBearBoxes, i), near ? bbBearColor : color.new(bbBearColor, 100))
+            box.set_border_color(array.get(bbBearBoxes, i), near ? bbBearColor : color.new(bbBearColor, 100))
+    if showRB and array.size(rbBullBoxes) > 0
+        for i = 0 to array.size(rbBullBoxes) - 1
+            if not array.get(rbBullMitig, i)
+                near = zoneNear(array.get(rbBullHi, i), array.get(rbBullLo, i))
+                box.set_bgcolor(array.get(rbBullBoxes, i), near ? rbBullColor : color.new(rbBullColor, 100))
+                box.set_border_color(array.get(rbBullBoxes, i), near ? rbBullColor : color.new(rbBullColor, 100))
+    if showRB and array.size(rbBearBoxes) > 0
+        for i = 0 to array.size(rbBearBoxes) - 1
+            if not array.get(rbBearMitig, i)
+                near = zoneNear(array.get(rbBearHi, i), array.get(rbBearLo, i))
+                box.set_bgcolor(array.get(rbBearBoxes, i), near ? rbBearColor : color.new(rbBearColor, 100))
+                box.set_border_color(array.get(rbBearBoxes, i), near ? rbBearColor : color.new(rbBearColor, 100))
+    if showFVG and array.size(fvgBullBoxes) > 0
+        for i = 0 to array.size(fvgBullBoxes) - 1
+            if not array.get(fvgBullDead, i)
+                near = zoneNear(array.get(fvgBullTop, i), array.get(fvgBullBot, i))
+                box.set_bgcolor(array.get(fvgBullBoxes, i), near ? fvgBullColor : color.new(fvgBullColor, 100))
+                box.set_border_color(array.get(fvgBullBoxes, i), near ? fvgBullColor : color.new(fvgBullColor, 100))
+    if showFVG and array.size(fvgBearBoxes) > 0
+        for i = 0 to array.size(fvgBearBoxes) - 1
+            if not array.get(fvgBearDead, i)
+                near = zoneNear(array.get(fvgBearTop, i), array.get(fvgBearBot, i))
+                box.set_bgcolor(array.get(fvgBearBoxes, i), near ? fvgBearColor : color.new(fvgBearColor, 100))
+                box.set_border_color(array.get(fvgBearBoxes, i), near ? fvgBearColor : color.new(fvgBearColor, 100))
+    if showIFVG and array.size(ifvgBullBoxes) > 0
+        for i = 0 to array.size(ifvgBullBoxes) - 1
+            near = zoneNear(array.get(ifvgBullTop, i), array.get(ifvgBullBot, i))
+            box.set_bgcolor(array.get(ifvgBullBoxes, i), near ? ifvgBullColor : color.new(ifvgBullColor, 100))
+            box.set_border_color(array.get(ifvgBullBoxes, i), near ? ifvgBullColor : color.new(ifvgBullColor, 100))
+    if showIFVG and array.size(ifvgBearBoxes) > 0
+        for i = 0 to array.size(ifvgBearBoxes) - 1
+            near = zoneNear(array.get(ifvgBearTop, i), array.get(ifvgBearBot, i))
+            box.set_bgcolor(array.get(ifvgBearBoxes, i), near ? ifvgBearColor : color.new(ifvgBearColor, 100))
+            box.set_border_color(array.get(ifvgBearBoxes, i), near ? ifvgBearColor : color.new(ifvgBearColor, 100))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ALERTS (basic structure events only)
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(bullBOS,  "Bull BOS",  "Bullish Break of Structure")
+alertcondition(bearBOS,  "Bear BOS",  "Bearish Break of Structure")
+alertcondition(isBullFVG,"Bull FVG",  "Bullish Fair Value Gap")
+alertcondition(isBearFVG,"Bear FVG",  "Bearish Fair Value Gap")
+alertcondition(isBullRB, "Bull RB",   "Bullish Rejection Block")
+alertcondition(isBearRB, "Bear RB",   "Bearish Rejection Block")
