@@ -864,6 +864,20 @@ sigOBPrintConfirmBars = input.int(0,      "OB-PRINT confirmation bars",    group
 sigOBPrintRespectChop = input.bool(true,  "OB-PRINT respects chop filter", group=grpOBP,
      tooltip="When ON, OB-PRINT signals are blocked while the chop filter is active. Turn OFF to let OB-PRINT fire even in choppy conditions (the BOS itself is structural so this is reasonable).")
 
+// ── HTF CONFIRMATION (v16.5 NEW) ──────────────────────────────────────────────
+grpHTF = "📊 HTF Confirmation"
+htfEnable        = input.bool(true,  "Require HTF confirmation",     group=grpHTF,
+     tooltip="Master switch. When ON, every BUY/SELL (tier ★/★★/★★★ AND OB-PRINT) is gated by the 1h-timeframe checks below. Long signals only fire when 1h is bullish; short signals only fire when 1h is bearish. Non-repainting (uses the last CLOSED HTF bar).")
+htfTimeframe     = input.timeframe("60", "HTF timeframe",             group=grpHTF,
+     tooltip="Higher timeframe used for confirmation. Default 60 = 1 hour. Common picks: 60, 240, D.")
+htfUseTrend      = input.bool(true,  "Require HTF trend (close vs EMA)", group=grpHTF,
+     tooltip="On the HTF, the last closed bar's close must be above the HTF EMA for longs (mirror for shorts). This is the simplest and most reliable HTF filter.")
+htfEmaLength     = input.int(50,    "HTF EMA length",                 group=grpHTF, minval=10, maxval=400)
+htfUseStructure  = input.bool(false, "Require HTF structure alignment", group=grpHTF,
+     tooltip="Stricter filter: long signals require the last closed HTF close to be above the most recent HTF swing high (i.e., HTF has broken structure up). Mirror for shorts. Default OFF since it cuts ~half the signals.")
+htfStructLook    = input.int(5,     "HTF pivot lookback",             group=grpHTF, minval=2, maxval=20)
+htfShowDash      = input.bool(true,  "Show HTF row on dashboard",     group=grpHTF)
+
 // ── Direction toggles ─────────────────────────────────────────────────────────
 grpDIR = "📊 Signals — Direction"
 sigShowLongs  = input.bool(true,  "Show LONG signals",  group=grpDIR)
@@ -883,6 +897,31 @@ trendBear = close < ema
 
 recentEQLSweep = (bar_index - lastEQLSweepBar) <= sigSweepWindow
 recentEQHSweep = (bar_index - lastEQHSweepBar) <= sigSweepWindow
+
+// ── HTF CONFIRMATION (v16.5 NEW) — non-repainting 1h gate ─────────────────────
+// Pulls the LAST CLOSED HTF bar's close, EMA, and prior pivot high/low.
+// No future leakage: uses [1] + lookahead_on, the canonical pattern in Pine v5.
+
+f_htfClose = close
+f_htfEma   = ta.ema(close, htfEmaLength)
+f_htfPivHi = ta.valuewhen(not na(ta.pivothigh(high, htfStructLook, htfStructLook)), ta.pivothigh(high, htfStructLook, htfStructLook), 0)
+f_htfPivLo = ta.valuewhen(not na(ta.pivotlow(low,   htfStructLook, htfStructLook)), ta.pivotlow(low,   htfStructLook, htfStructLook), 0)
+
+htfClose  = request.security(syminfo.tickerid, htfTimeframe, f_htfClose[1],  lookahead=barmerge.lookahead_on)
+htfEma    = request.security(syminfo.tickerid, htfTimeframe, f_htfEma[1],    lookahead=barmerge.lookahead_on)
+htfPivHi  = request.security(syminfo.tickerid, htfTimeframe, f_htfPivHi[1],  lookahead=barmerge.lookahead_on)
+htfPivLo  = request.security(syminfo.tickerid, htfTimeframe, f_htfPivLo[1],  lookahead=barmerge.lookahead_on)
+
+htfTrendBullOK  = (not htfUseTrend)     or (not na(htfEma)   and htfClose > htfEma)
+htfTrendBearOK  = (not htfUseTrend)     or (not na(htfEma)   and htfClose < htfEma)
+htfStructBullOK = (not htfUseStructure) or (not na(htfPivHi) and htfClose > htfPivHi)
+htfStructBearOK = (not htfUseStructure) or (not na(htfPivLo) and htfClose < htfPivLo)
+
+htfBullOK = (not htfEnable) or (htfTrendBullOK and htfStructBullOK)
+htfBearOK = (not htfEnable) or (htfTrendBearOK and htfStructBearOK)
+
+htfBullDir = (not na(htfEma)) and htfClose > htfEma
+htfBearDir = (not na(htfEma)) and htfClose < htfEma
 
 // ── ★★★ quality predicates (now stricter in v16.5) ────────────────────────────
 bullStrongBody = close > open and candleRange > 0 and ((close - open) / candleRange) >= sigT1BodyPct and (lowerWick / candleRange) >= sigT1WickPct
@@ -1100,8 +1139,8 @@ var int lastFireDir = 0  // +1 = last fire was BUY, -1 = SELL, 0 = none
 buyDirOK  = (not sigNoSameDir) or lastFireDir != 1
 sellDirOK = (not sigNoSameDir) or lastFireDir != -1
 
-buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyTier  != 0 and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK
-sellReady = sigShowShorts and barstate.isconfirmed and fireSellTier != 0 and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK
+buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyTier  != 0 and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK
+sellReady = sigShowShorts and barstate.isconfirmed and fireSellTier != 0 and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK
 
 if buyReady
     lastBuyBar  := bar_index
@@ -1212,8 +1251,8 @@ if not obpFireSell and pendOBPSellBar > -9999
 
 // Gates — share cooldown with the tier engine
 obpChopBlocked = sigOBPrintRespectChop and isChoppy
-obpBuyReady  = sigShowLongs  and barstate.isconfirmed and obpFireBuy  and (bar_index - lastBuyBar)  >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != 1)
-obpSellReady = sigShowShorts and barstate.isconfirmed and obpFireSell and (bar_index - lastSellBar) >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != -1)
+obpBuyReady  = sigShowLongs  and barstate.isconfirmed and obpFireBuy  and (bar_index - lastBuyBar)  >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != 1)  and htfBullOK
+obpSellReady = sigShowShorts and barstate.isconfirmed and obpFireSell and (bar_index - lastSellBar) >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != -1) and htfBearOK
 
 if obpBuyReady
     lastBuyBar  := bar_index
@@ -1303,7 +1342,7 @@ if obpSellReady
     lastSigText  := "SELL OB-PRINT"
     lastSigColor := color.new(#FF5722, 0)
 
-var table dashTable = table.new(dashPos, 2, 10,
+var table dashTable = table.new(dashPos, 2, 11,
      bgcolor=color.new(#0A0A0A, 10),
      border_width=1, frame_color=color.new(color.gray, 50), frame_width=1,
      border_color=color.new(color.gray, 70))
@@ -1374,5 +1413,23 @@ if showDashboard and barstate.islast
     table.cell(dashTable, 0, 8, "Pending",  text_color=color.white, text_size=dashSz)
     table.cell(dashTable, 1, 8, pendTxt,    text_color=pendCol, text_size=dashSz)
 
-    table.cell(dashTable, 0, 9, "Last Signal", text_color=color.white, text_size=dashSz)
-    table.cell(dashTable, 1, 9, lastSigText,   text_color=lastSigColor, text_size=dashSz)
+    // NEW: HTF confirmation status
+    htfTxt = ""
+    htfCol = color.new(color.gray, 0)
+    if not htfEnable
+        htfTxt := "OFF"
+        htfCol := color.new(color.gray, 0)
+    else if htfBullDir
+        htfTxt := htfTimeframe + " ▲ BULL " + (htfBullOK ? "✓" : "✗")
+        htfCol := htfBullOK ? color.new(#00C853, 0) : color.new(#FF6D00, 0)
+    else if htfBearDir
+        htfTxt := htfTimeframe + " ▼ BEAR " + (htfBearOK ? "✓" : "✗")
+        htfCol := htfBearOK ? color.new(#F23645, 0) : color.new(#FF6D00, 0)
+    else
+        htfTxt := htfTimeframe + " —"
+    if htfShowDash
+        table.cell(dashTable, 0, 9, "HTF (" + htfTimeframe + ")", text_color=color.white, text_size=dashSz)
+        table.cell(dashTable, 1, 9, htfTxt, text_color=htfCol, text_size=dashSz)
+
+    table.cell(dashTable, 0, 10, "Last Signal", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 10, lastSigText,   text_color=lastSigColor, text_size=dashSz)
