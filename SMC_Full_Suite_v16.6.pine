@@ -13,6 +13,7 @@ indicator("SMC v16.6 — Combo Signals + HTF + Confirmation Bars", overlay=true,
 //    4) SWEEP+FVG  — recent EQL/EQH sweep + reaction off FVG
 //    5) OB+RB      — OB reaction with an RB nearby (or vice versa)
 //    6) BB+FVG     — BB reaction with an FVG nearby (or vice versa)
+//    7) RB+FVG     — RB reaction with an FVG nearby (or vice versa)
 //
 //  Label format:  "BUY OB+FVG", "SELL BB+IFVG", etc.
 //
@@ -810,7 +811,28 @@ choppyByADX = chopUseADX and adxVal <= adxThresholdIn
 isChoppy    = chopEnable and (choppyByCI or choppyByADX)
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  COMBO SIGNAL ENGINE (v16.6) — single BUY/SELL on any of 6 confluences
+//  RSI FILTER — block BUYs when overbought, SELLs when oversold
+//
+//  Stops "buy the wick after a pump" and "sell the wick after a dump" cases —
+//  e.g., a Sweep+FVG that prints right at the top of a vertical move.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpRSI = "📈 RSI Filter"
+rsiEnable     = input.bool(true,  "Block signals at RSI extremes", group=grpRSI,
+     tooltip="When ON, BUY signals are suppressed while RSI is at/above the overbought line, and SELL signals are suppressed while RSI is at/below the oversold line. Stops combos firing right at the top of a pump (long) or bottom of a dump (short).")
+rsiLength     = input.int(14,     "RSI Length",                    group=grpRSI, minval=2, maxval=50)
+rsiOverbought = input.float(70.0, "Overbought threshold (blocks BUYs)", group=grpRSI, minval=50.0, maxval=95.0, step=0.5,
+     tooltip="If RSI ≥ this value, BUY signals are blocked. Default 70.")
+rsiOversold   = input.float(30.0, "Oversold threshold (blocks SELLs)",  group=grpRSI, minval=5.0,  maxval=50.0, step=0.5,
+     tooltip="If RSI ≤ this value, SELL signals are blocked. Default 30.")
+rsiShowDash   = input.bool(true,  "Show RSI row on dashboard",     group=grpRSI)
+
+rsiVal     = ta.rsi(close, rsiLength)
+rsiBlockBuy  = rsiEnable and not na(rsiVal) and rsiVal >= rsiOverbought
+rsiBlockSell = rsiEnable and not na(rsiVal) and rsiVal <= rsiOversold
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COMBO SIGNAL ENGINE (v16.6) — single BUY/SELL on any of 7 confluences
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpCOMBO = "🎯 Combo Signals"
@@ -826,6 +848,8 @@ sigComboOBRB      = input.bool(true, "5) OB + RB  (reaction at one, other nearby
      tooltip="Fires BUY when a bullish OB reaction prints with a bullish RB nearby — or a bullish RB reaction with a bullish OB nearby. Mirror for SELL.")
 sigComboBBFVG     = input.bool(true, "6) BB + FVG (reaction at one, other nearby)",   group=grpCOMBO,
      tooltip="Fires BUY when a bullish BB reaction prints with a bullish FVG nearby — or a bullish FVG reaction with a bullish BB nearby. Mirror for SELL.")
+sigComboRBFVG     = input.bool(true, "7) RB + FVG (reaction at one, other nearby)",   group=grpCOMBO,
+     tooltip="Fires BUY when a bullish RB reaction prints with a bullish FVG nearby — or a bullish FVG reaction with a bullish RB nearby. Mirror for SELL.")
 comboProxPct      = input.float(0.5, "Zone-proximity tolerance %", group=grpCOMBO, minval=0.05, maxval=5.0, step=0.05,
      tooltip="When a combo says zone B is 'nearby' the reaction zone, zone B's midpoint must be within this %-distance of the current close. Default 0.5%.")
 sigSweepWindow    = input.int(15,    "Sweep window (bars)",        group=grpCOMBO, minval=1, maxval=100,
@@ -1105,8 +1129,9 @@ buyCombo3 = sigComboSweepOBBB and recentEQLSweep and (rBullOB or rBullBB)
 buyCombo4 = sigComboSweepFVG  and recentEQLSweep and rBullFVG
 buyCombo5 = sigComboOBRB      and ((rBullOB  and nBullRB)   or (rBullRB   and nBullOB))
 buyCombo6 = sigComboBBFVG     and ((rBullBB  and nBullFVG)  or (rBullFVG  and nBullBB))
+buyCombo7 = sigComboRBFVG     and ((rBullRB  and nBullFVG)  or (rBullFVG  and nBullRB))
 
-buyComboFire = buyCombo1 or buyCombo2 or buyCombo3 or buyCombo4 or buyCombo5 or buyCombo6
+buyComboFire = buyCombo1 or buyCombo2 or buyCombo3 or buyCombo4 or buyCombo5 or buyCombo6 or buyCombo7
 
 // First-matching combo wins for naming (deterministic order).
 buyComboName = ""
@@ -1122,6 +1147,8 @@ else if buyCombo5
     buyComboName := "OB+RB"
 else if buyCombo6
     buyComboName := "BB+FVG"
+else if buyCombo7
+    buyComboName := "RB+FVG"
 
 // ── Combo evaluation — SELL ───────────────────────────────────────────────────
 rBearOB   = hasReactBearOB()
@@ -1141,8 +1168,9 @@ sellCombo3 = sigComboSweepOBBB and recentEQHSweep and (rBearOB or rBearBB)
 sellCombo4 = sigComboSweepFVG  and recentEQHSweep and rBearFVG
 sellCombo5 = sigComboOBRB      and ((rBearOB  and nBearRB)   or (rBearRB   and nBearOB))
 sellCombo6 = sigComboBBFVG     and ((rBearBB  and nBearFVG)  or (rBearFVG  and nBearBB))
+sellCombo7 = sigComboRBFVG     and ((rBearRB  and nBearFVG)  or (rBearFVG  and nBearRB))
 
-sellComboFire = sellCombo1 or sellCombo2 or sellCombo3 or sellCombo4 or sellCombo5 or sellCombo6
+sellComboFire = sellCombo1 or sellCombo2 or sellCombo3 or sellCombo4 or sellCombo5 or sellCombo6 or sellCombo7
 
 sellComboName = ""
 if sellCombo1
@@ -1157,6 +1185,8 @@ else if sellCombo5
     sellComboName := "OB+RB"
 else if sellCombo6
     sellComboName := "BB+FVG"
+else if sellCombo7
+    sellComboName := "RB+FVG"
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  PENDING-CONFIRMATION ENGINE (kept from v16.5, simplified to single tier)
@@ -1232,8 +1262,8 @@ var int lastFireDir = 0  // +1 = last fire was BUY, -1 = SELL, 0 = none
 buyDirOK  = (not sigNoSameDir) or lastFireDir != 1
 sellDirOK = (not sigNoSameDir) or lastFireDir != -1
 
-buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyName  != "" and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK
-sellReady = sigShowShorts and barstate.isconfirmed and fireSellName != "" and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK
+buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyName  != "" and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK and not rsiBlockBuy
+sellReady = sigShowShorts and barstate.isconfirmed and fireSellName != "" and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK and not rsiBlockSell
 
 if buyReady
     lastBuyBar  := bar_index
@@ -1317,7 +1347,7 @@ if sellReady
     lastSigText  := "SELL " + fireSellName
     lastSigColor := color.new(#F23645, 0)
 
-var table dashTable = table.new(dashPos, 2, 11,
+var table dashTable = table.new(dashPos, 2, 12,
      bgcolor=color.new(#0A0A0A, 10),
      border_width=1, frame_color=color.new(color.gray, 50), frame_width=1,
      border_color=color.new(color.gray, 70))
@@ -1373,8 +1403,10 @@ if showDashboard and barstate.islast
         combosOn += 1
     if sigComboBBFVG
         combosOn += 1
+    if sigComboRBFVG
+        combosOn += 1
     table.cell(dashTable, 0, 6, "Active Combos", text_color=color.white, text_size=dashSz)
-    table.cell(dashTable, 1, 6, str.tostring(combosOn) + " / 6", text_color=color.new(color.yellow, 0), text_size=dashSz)
+    table.cell(dashTable, 1, 6, str.tostring(combosOn) + " / 7", text_color=color.new(color.yellow, 0), text_size=dashSz)
 
     longCD  = math.max(0, sigCooldown - (bar_index - lastBuyBar))
     shortCD = math.max(0, sigCooldown - (bar_index - lastSellBar))
@@ -1414,5 +1446,26 @@ if showDashboard and barstate.islast
         table.cell(dashTable, 0, 9, "HTF (" + htfTimeframe + ")", text_color=color.white, text_size=dashSz)
         table.cell(dashTable, 1, 9, htfTxt, text_color=htfCol, text_size=dashSz)
 
-    table.cell(dashTable, 0, 10, "Last Signal", text_color=color.white, text_size=dashSz)
-    table.cell(dashTable, 1, 10, lastSigText,   text_color=lastSigColor, text_size=dashSz)
+    rsiTxt = ""
+    rsiCol = color.new(color.gray, 0)
+    if not rsiEnable
+        rsiTxt := "OFF"
+    else if na(rsiVal)
+        rsiTxt := "—"
+    else
+        rsiStr = str.tostring(rsiVal, "#.0")
+        if rsiBlockBuy
+            rsiTxt := rsiStr + "  ⚠ block BUY"
+            rsiCol := color.new(#F23645, 0)
+        else if rsiBlockSell
+            rsiTxt := rsiStr + "  ⚠ block SELL"
+            rsiCol := color.new(#00C853, 0)
+        else
+            rsiTxt := rsiStr + "  ✓"
+            rsiCol := color.new(color.gray, 0)
+    if rsiShowDash
+        table.cell(dashTable, 0, 10, "RSI (" + str.tostring(rsiLength) + ")", text_color=color.white, text_size=dashSz)
+        table.cell(dashTable, 1, 10, rsiTxt, text_color=rsiCol, text_size=dashSz)
+
+    table.cell(dashTable, 0, 11, "Last Signal", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 11, lastSigText,   text_color=lastSigColor, text_size=dashSz)
