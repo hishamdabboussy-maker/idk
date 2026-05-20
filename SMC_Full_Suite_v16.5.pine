@@ -855,6 +855,15 @@ sigT2Enable = input.bool(true,  "Tier ★★  REVERSAL (zone + sweep + body)",  
 sigT3Enable = input.bool(false, "Tier ★   LOOSE (zone + body only)",              group=grpTIER)
 sigSweepWindow = input.int(15, "Sweep window for Tier ★★ (bars)", group=grpTIER, minval=1, maxval=50)
 
+// ── OB-PRINT (v16.5 NEW): primary signal on OB creation ───────────────────────
+grpOBP = "📊 Signals — OB-PRINT"
+sigOBPrintEnable      = input.bool(true,  "Fire on OB creation (BOS bar)", group=grpOBP,
+     tooltip="When ON, a BUY signal fires the moment a bullish OB label is drawn (i.e., the bar a bullish BOS prints), and a SELL signal fires when a bearish OB label is drawn. Independent of the tiered zone-reaction system. Use this to enter on the breakout itself rather than waiting for a retest.")
+sigOBPrintConfirmBars = input.int(0,      "OB-PRINT confirmation bars",    group=grpOBP, minval=0, maxval=10,
+     tooltip="Wait this many bars after the OB prints before firing. During the wait, if any close drops below the BOS bar's low (longs) / above its high (shorts), the pending signal is invalidated. 0 = fire same bar.")
+sigOBPrintRespectChop = input.bool(true,  "OB-PRINT respects chop filter", group=grpOBP,
+     tooltip="When ON, OB-PRINT signals are blocked while the chop filter is active. Turn OFF to let OB-PRINT fire even in choppy conditions (the BOS itself is structural so this is reasonable).")
+
 // ── Direction toggles ─────────────────────────────────────────────────────────
 grpDIR = "📊 Signals — Direction"
 sigShowLongs  = input.bool(true,  "Show LONG signals",  group=grpDIR)
@@ -1150,6 +1159,90 @@ plotshape(sigConfirmShowPending and buyPendRegistered,  title="BUY pending",  lo
 plotshape(sigConfirmShowPending and sellPendRegistered, title="SELL pending", location=location.abovebar, style=shape.circle, color=color.new(#F23645, 50), size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  OB-PRINT ENGINE (v16.5 NEW) — fires on the BOS bar that creates the OB
+//  Runs in parallel with the tiered zone-reaction engine but shares the
+//  cooldown gates (lastBuyBar/lastSellBar/lastFireDir) so a tier signal
+//  can't double-fire on the same direction within the cooldown window.
+// ══════════════════════════════════════════════════════════════════════════════
+
+obpBuyTrig  = sigOBPrintEnable and showOB and bullBOS
+obpSellTrig = sigOBPrintEnable and showOB and bearBOS
+
+var int   pendOBPBuyBar    = -9999
+var float pendOBPBuyTrigLo = na
+var int   pendOBPSellBar    = -9999
+var float pendOBPSellTrigHi = na
+
+obpFireBuy   = false
+obpFireSell  = false
+obpPendBuy   = false
+obpPendSell  = false
+
+// Phase 1 — register or fire-immediate
+if obpBuyTrig
+    if sigOBPrintConfirmBars == 0
+        obpFireBuy := true
+    else
+        pendOBPBuyBar    := bar_index
+        pendOBPBuyTrigLo := low
+        obpPendBuy       := true
+
+if obpSellTrig
+    if sigOBPrintConfirmBars == 0
+        obpFireSell := true
+    else
+        pendOBPSellBar    := bar_index
+        pendOBPSellTrigHi := high
+        obpPendSell       := true
+
+// Phase 2 — confirm or invalidate pending
+if not obpFireBuy and pendOBPBuyBar > -9999
+    if close < pendOBPBuyTrigLo
+        pendOBPBuyBar := -9999
+    else if (bar_index - pendOBPBuyBar) >= sigOBPrintConfirmBars
+        obpFireBuy    := true
+        pendOBPBuyBar := -9999
+
+if not obpFireSell and pendOBPSellBar > -9999
+    if close > pendOBPSellTrigHi
+        pendOBPSellBar := -9999
+    else if (bar_index - pendOBPSellBar) >= sigOBPrintConfirmBars
+        obpFireSell    := true
+        pendOBPSellBar := -9999
+
+// Gates — share cooldown with the tier engine
+obpChopBlocked = sigOBPrintRespectChop and isChoppy
+obpBuyReady  = sigShowLongs  and barstate.isconfirmed and obpFireBuy  and (bar_index - lastBuyBar)  >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != 1)
+obpSellReady = sigShowShorts and barstate.isconfirmed and obpFireSell and (bar_index - lastSellBar) >= sigCooldown and not obpChopBlocked and ((not sigNoSameDir) or lastFireDir != -1)
+
+if obpBuyReady
+    lastBuyBar  := bar_index
+    lastFireDir := 1
+if obpSellReady
+    lastSellBar := bar_index
+    lastFireDir := -1
+
+// Labels (gold for OB-PRINT — distinct from tier colors)
+if showSigLabels and obpBuyReady
+    label.new(bar_index, low - candleRange * 0.5,
+         "BUY OB-PRINT\n" + str.tostring(close, format.mintick),
+         style=label.style_label_up, color=color.new(#FFC107, 0),
+         textcolor=color.black, size=size.small)
+
+if showSigLabels and obpSellReady
+    label.new(bar_index, high + candleRange * 0.5,
+         "SELL OB-PRINT\n" + str.tostring(close, format.mintick),
+         style=label.style_label_down, color=color.new(#FF5722, 0),
+         textcolor=color.white, size=size.small)
+
+plotshape(obpBuyReady,  title="BUY OB-PRINT",  location=location.belowbar, style=shape.diamond, color=color.new(#FFC107, 0), size=size.small)
+plotshape(obpSellReady, title="SELL OB-PRINT", location=location.abovebar, style=shape.diamond, color=color.new(#FF5722, 0), size=size.small)
+
+// Pending OB-PRINT markers
+plotshape(sigConfirmShowPending and obpPendBuy,  title="OBP BUY pending",  location=location.belowbar, style=shape.circle, color=color.new(#FFC107, 50), size=size.tiny)
+plotshape(sigConfirmShowPending and obpPendSell, title="OBP SELL pending", location=location.abovebar, style=shape.circle, color=color.new(#FF5722, 50), size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  ALERTS
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1167,6 +1260,9 @@ alertcondition(buyT3Fire,   "BUY ★ Loose",      "▲ BUY Loose — Body reacti
 alertcondition(sellT1Fire,  "SELL ★★★ Premium", "▼ SELL Premium — Confirmed reaction with trend + body + reclaim")
 alertcondition(sellT2Fire,  "SELL ★★ Reversal", "▼ SELL Reversal — Sweep + body reaction (confirmed)")
 alertcondition(sellT3Fire,  "SELL ★ Loose",     "▼ SELL Loose — Body reaction (confirmed)")
+
+alertcondition(obpBuyReady,  "BUY OB-PRINT",  "▲ BUY OB-PRINT — Bullish OB created on this bar")
+alertcondition(obpSellReady, "SELL OB-PRINT", "▼ SELL OB-PRINT — Bearish OB created on this bar")
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  DASHBOARD
@@ -1200,6 +1296,12 @@ if buyReady
 if sellReady
     lastSigText  := "SELL " + fireSellSource + " " + tierStars(fireSellTier)
     lastSigColor := fireSellTier == 1 ? color.new(#F23645, 0) : fireSellTier == 2 ? color.new(#FF6D00, 0) : color.new(#9E9E9E, 0)
+if obpBuyReady
+    lastSigText  := "BUY OB-PRINT"
+    lastSigColor := color.new(#FFC107, 0)
+if obpSellReady
+    lastSigText  := "SELL OB-PRINT"
+    lastSigColor := color.new(#FF5722, 0)
 
 var table dashTable = table.new(dashPos, 2, 10,
      bgcolor=color.new(#0A0A0A, 10),
