@@ -826,8 +826,12 @@ rsiOverbought = input.float(70.0, "Overbought threshold (blocks BUYs)", group=gr
 rsiOversold   = input.float(30.0, "Oversold threshold (blocks SELLs)",  group=grpRSI, minval=5.0,  maxval=50.0, step=0.5,
      tooltip="If RSI ≤ this value, SELL signals are blocked. Default 30.")
 rsiShowDash   = input.bool(true,  "Show RSI row on dashboard",     group=grpRSI)
-rsiBypassSweep= input.bool(true,  "Bypass RSI on Sweep combos",    group=grpRSI,
-     tooltip="When ON, the RSI gate is ignored for Combo 3 (Sweep+OB|BB) and Combo 4 (Sweep+FVG). A real liquidity sweep + zone reaction is the highest-conviction setup, so RSI being elevated/depressed shouldn't suppress it. Default ON.")
+rsiBypassSweep= input.bool(false, "Bypass RSI on Sweep combos",    group=grpRSI,
+     tooltip="When ON, the RSI gate is completely ignored for Combo 3 (Sweep+OB|BB) and Combo 4 (Sweep+FVG). When OFF, sweep combos use the dedicated sweep-RSI thresholds below instead of the main OB/OT thresholds.")
+rsiSweepOB    = input.float(60.0, "Sweep: block BUY above",         group=grpRSI, minval=50.0, maxval=95.0, step=0.5,
+     tooltip="For sweep-based BUY combos only: RSI must be BELOW this value for the signal to fire. Idea: a sweep+bounce off a zone should happen while RSI is still depressed/neutral, not already overbought. Default 60.")
+rsiSweepOS    = input.float(40.0, "Sweep: block SELL below",        group=grpRSI, minval=5.0,  maxval=50.0, step=0.5,
+     tooltip="For sweep-based SELL combos only: RSI must be ABOVE this value for the signal to fire. Mirror of sweep-OB. Default 40.")
 
 rsiVal     = ta.rsi(close, rsiLength)
 rsiBlockBuy  = rsiEnable and not na(rsiVal) and rsiVal >= rsiOverbought
@@ -1333,11 +1337,15 @@ var int lastFireDir = 0  // +1 = last fire was BUY, -1 = SELL, 0 = none
 buyDirOK  = (not sigNoSameDir) or lastFireDir != 1
 sellDirOK = (not sigNoSameDir) or lastFireDir != -1
 
-// RSI gate — bypass for sweep-based combos when rsiBypassSweep is ON.
+// RSI gate — sweep combos use dedicated thresholds (rsiSweepOB / rsiSweepOS).
 fireBuyIsSweep  = fireBuyName  == "SWEEP+OB" or fireBuyName  == "SWEEP+BB" or fireBuyName  == "SWEEP+FVG"
 fireSellIsSweep = fireSellName == "SWEEP+OB" or fireSellName == "SWEEP+BB" or fireSellName == "SWEEP+FVG"
-rsiGateBuy  = rsiBlockBuy  and not (rsiBypassSweep and fireBuyIsSweep)
-rsiGateSell = rsiBlockSell and not (rsiBypassSweep and fireSellIsSweep)
+
+rsiBlockBuySweep  = rsiEnable and not na(rsiVal) and rsiVal >= rsiSweepOB
+rsiBlockSellSweep = rsiEnable and not na(rsiVal) and rsiVal <= rsiSweepOS
+
+rsiGateBuy  = fireBuyIsSweep  ? (rsiBypassSweep ? false : rsiBlockBuySweep)  : rsiBlockBuy
+rsiGateSell = fireSellIsSweep ? (rsiBypassSweep ? false : rsiBlockSellSweep) : rsiBlockSell
 
 buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyName  != "" and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK and not rsiGateBuy
 sellReady = sigShowShorts and barstate.isconfirmed and fireSellName != "" and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK and not rsiGateSell
