@@ -1,5 +1,5 @@
 //@version=5
-indicator("SMC v16.6 — Combo Signals + HTF + Confirmation Bars", overlay=true, max_boxes_count=500, max_lines_count=200, max_labels_count=500)
+indicator("SMC v16.6.1 — Combo Signals + Reaction Strictness + Gate Diagnostics", overlay=true, max_boxes_count=500, max_lines_count=200, max_labels_count=500)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  v16.6 — Combo-only signal engine (replaces tiers + OB-PRINT in v16.5)
@@ -826,6 +826,8 @@ rsiOverbought = input.float(70.0, "Overbought threshold (blocks BUYs)", group=gr
 rsiOversold   = input.float(30.0, "Oversold threshold (blocks SELLs)",  group=grpRSI, minval=5.0,  maxval=50.0, step=0.5,
      tooltip="If RSI ≤ this value, SELL signals are blocked. Default 30.")
 rsiShowDash   = input.bool(true,  "Show RSI row on dashboard",     group=grpRSI)
+rsiBypassSweep= input.bool(true,  "Bypass RSI on Sweep combos",    group=grpRSI,
+     tooltip="When ON, the RSI gate is ignored for Combo 3 (Sweep+OB|BB) and Combo 4 (Sweep+FVG). A real liquidity sweep + zone reaction is the highest-conviction setup, so RSI being elevated/depressed shouldn't suppress it. Default ON.")
 
 rsiVal     = ta.rsi(close, rsiLength)
 rsiBlockBuy  = rsiEnable and not na(rsiVal) and rsiVal >= rsiOverbought
@@ -913,18 +915,40 @@ htfBearOK = (not htfEnable) or (htfTrendBearOK and htfStructBearOK)
 htfBullDir = (not na(htfEma)) and htfClose > htfEma
 htfBearDir = (not na(htfEma)) and htfClose < htfEma
 
-// ── Reaction primitives (kept from v16.5) ────────────────────────────────────
+// ── Reaction primitives (kept from v16.5; strictness now tunable) ───────────
+//
+//  reactStrictness controls what counts as a "reaction" off a zone:
+//    Strict — close must be entirely above zone top (above zLo for bears).
+//             v16.5 default. Rejects most live bounces because the close
+//             often lands inside the zone.
+//    Normal — close must be above zone midpoint (default in v16.6.1).
+//             Catches the common "wick into zone, body closes in upper half".
+//    Loose  — close just must NOT break zone bottom (zHi for bears) on the
+//             confirming candle. Catches slow/late reactions but admits more
+//             false starts; pair with confirmation bars.
+//
+grpREACT = "🎯 Reaction Strictness"
+reactStrictness = input.string("Normal", "Reaction strictness", group=grpREACT,
+     options=["Strict","Normal","Loose"],
+     tooltip="How aggressively the script registers a 'reaction' off a zone.\n• Strict (old default) — close above zone top.\n• Normal (recommended) — close above zone midpoint.\n• Loose — close hasn't broken zone bottom. More signals, more noise.")
+
 bullPierced(zHi, zLo) => low  <= zHi and low  >= zLo - (zHi - zLo)
-bullRejected(zHi)     => close > zHi
+bullRejected(zHi, zLo) =>
+    reactStrictness == "Strict" ? close > zHi :
+     reactStrictness == "Loose"  ? close >= zLo :
+     close > math.avg(zHi, zLo)
 bullBody              = close > open or (candleRange > 0 and (lowerWick / candleRange) >= 0.5)
 
 bearPierced(zHi, zLo) => high >= zLo and high <= zHi + (zHi - zLo)
-bearRejected(zLo)     => close < zLo
+bearRejected(zHi, zLo) =>
+    reactStrictness == "Strict" ? close < zLo :
+     reactStrictness == "Loose"  ? close <= zHi :
+     close < math.avg(zHi, zLo)
 bearBody              = close < open or (candleRange > 0 and (upperWick / candleRange) >= 0.5)
 
 // "Reaction off zone" = pierced + rejected + body close in the right direction.
-bullReactZone(zHi, zLo) => bullPierced(zHi, zLo) and bullRejected(zHi) and bullBody
-bearReactZone(zHi, zLo) => bearPierced(zHi, zLo) and bearRejected(zLo) and bearBody
+bullReactZone(zHi, zLo) => bullPierced(zHi, zLo) and bullRejected(zHi, zLo) and bullBody
+bearReactZone(zHi, zLo) => bearPierced(zHi, zLo) and bearRejected(zHi, zLo) and bearBody
 
 // "Nearby zone" = zone midpoint within comboProxPct% of current close.
 zoneNearClose(zMid) => close > 0 and (math.abs(close - zMid) / close * 100.0) <= comboProxPct
@@ -1262,8 +1286,14 @@ var int lastFireDir = 0  // +1 = last fire was BUY, -1 = SELL, 0 = none
 buyDirOK  = (not sigNoSameDir) or lastFireDir != 1
 sellDirOK = (not sigNoSameDir) or lastFireDir != -1
 
-buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyName  != "" and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK and not rsiBlockBuy
-sellReady = sigShowShorts and barstate.isconfirmed and fireSellName != "" and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK and not rsiBlockSell
+// RSI gate — bypass for sweep-based combos when rsiBypassSweep is ON.
+fireBuyIsSweep  = fireBuyName  == "SWEEP+OB" or fireBuyName  == "SWEEP+BB" or fireBuyName  == "SWEEP+FVG"
+fireSellIsSweep = fireSellName == "SWEEP+OB" or fireSellName == "SWEEP+BB" or fireSellName == "SWEEP+FVG"
+rsiGateBuy  = rsiBlockBuy  and not (rsiBypassSweep and fireBuyIsSweep)
+rsiGateSell = rsiBlockSell and not (rsiBypassSweep and fireSellIsSweep)
+
+buyReady  = sigShowLongs  and barstate.isconfirmed and fireBuyName  != "" and (bar_index - lastBuyBar)  >= sigCooldown and not isChoppy and buyDirOK  and htfBullOK and not rsiGateBuy
+sellReady = sigShowShorts and barstate.isconfirmed and fireSellName != "" and (bar_index - lastSellBar) >= sigCooldown and not isChoppy and sellDirOK and htfBearOK and not rsiGateSell
 
 if buyReady
     lastBuyBar  := bar_index
@@ -1347,7 +1377,7 @@ if sellReady
     lastSigText  := "SELL " + fireSellName
     lastSigColor := color.new(#F23645, 0)
 
-var table dashTable = table.new(dashPos, 2, 12,
+var table dashTable = table.new(dashPos, 2, 14,
      bgcolor=color.new(#0A0A0A, 10),
      border_width=1, frame_color=color.new(color.gray, 50), frame_width=1,
      border_color=color.new(color.gray, 70))
@@ -1467,5 +1497,76 @@ if showDashboard and barstate.islast
         table.cell(dashTable, 0, 10, "RSI (" + str.tostring(rsiLength) + ")", text_color=color.white, text_size=dashSz)
         table.cell(dashTable, 1, 10, rsiTxt, text_color=rsiCol, text_size=dashSz)
 
-    table.cell(dashTable, 0, 11, "Last Signal", text_color=color.white, text_size=dashSz)
-    table.cell(dashTable, 1, 11, lastSigText,   text_color=lastSigColor, text_size=dashSz)
+    // ── Diagnostic: BUY gate / SELL gate ─────────────────────────────────────
+    // Shows why a candidate combo on this bar isn't firing. Order matches the
+    // actual gate evaluation in buyReady / sellReady. "—" means no candidate
+    // combo on this bar (probably means the reaction primitive didn't trigger
+    // — try setting Reaction strictness to Loose).
+    buyGateTxt = ""
+    buyGateCol = color.new(color.gray, 0)
+    if buyComboFire
+        if not sigShowLongs
+            buyGateTxt := "longs OFF"
+            buyGateCol := color.new(#FF6D00, 0)
+        else if isChoppy
+            buyGateTxt := "🌊 chop"
+            buyGateCol := color.new(#FF6D00, 0)
+        else if not htfBullOK
+            buyGateTxt := "HTF blocked"
+            buyGateCol := color.new(#FF6D00, 0)
+        else if rsiGateBuy
+            buyGateTxt := "RSI blocked"
+            buyGateCol := color.new(#FF6D00, 0)
+        else if not buyDirOK
+            buyGateTxt := "same-dir blocked"
+            buyGateCol := color.new(#FF6D00, 0)
+        else if (bar_index - lastBuyBar) < sigCooldown
+            buyGateTxt := "cooldown " + str.tostring(sigCooldown - (bar_index - lastBuyBar)) + "b"
+            buyGateCol := color.new(#FF6D00, 0)
+        else
+            buyGateTxt := "✓ " + buyComboName
+            buyGateCol := color.new(#00C853, 0)
+    else if pendBuyBar >= 0
+        buyGateTxt := "pending " + pendBuyName
+        buyGateCol := color.new(#00C853, 30)
+    else
+        buyGateTxt := "—"
+
+    table.cell(dashTable, 0, 11, "BUY gate",  text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 11, buyGateTxt,  text_color=buyGateCol,  text_size=dashSz)
+
+    sellGateTxt = ""
+    sellGateCol = color.new(color.gray, 0)
+    if sellComboFire
+        if not sigShowShorts
+            sellGateTxt := "shorts OFF"
+            sellGateCol := color.new(#FF6D00, 0)
+        else if isChoppy
+            sellGateTxt := "🌊 chop"
+            sellGateCol := color.new(#FF6D00, 0)
+        else if not htfBearOK
+            sellGateTxt := "HTF blocked"
+            sellGateCol := color.new(#FF6D00, 0)
+        else if rsiGateSell
+            sellGateTxt := "RSI blocked"
+            sellGateCol := color.new(#FF6D00, 0)
+        else if not sellDirOK
+            sellGateTxt := "same-dir blocked"
+            sellGateCol := color.new(#FF6D00, 0)
+        else if (bar_index - lastSellBar) < sigCooldown
+            sellGateTxt := "cooldown " + str.tostring(sigCooldown - (bar_index - lastSellBar)) + "b"
+            sellGateCol := color.new(#FF6D00, 0)
+        else
+            sellGateTxt := "✓ " + sellComboName
+            sellGateCol := color.new(#F23645, 0)
+    else if pendSellBar >= 0
+        sellGateTxt := "pending " + pendSellName
+        sellGateCol := color.new(#F23645, 30)
+    else
+        sellGateTxt := "—"
+
+    table.cell(dashTable, 0, 12, "SELL gate", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 12, sellGateTxt, text_color=sellGateCol, text_size=dashSz)
+
+    table.cell(dashTable, 0, 13, "Last Signal", text_color=color.white, text_size=dashSz)
+    table.cell(dashTable, 1, 13, lastSigText,   text_color=lastSigColor, text_size=dashSz)
