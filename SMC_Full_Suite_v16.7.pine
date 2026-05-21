@@ -876,8 +876,8 @@ rsiOverbought = input.float(70.0, "Overbought threshold (blocks BUYs)", group=gr
 rsiOversold   = input.float(30.0, "Oversold threshold (blocks SELLs)",  group=grpRSI, minval=5.0,  maxval=50.0, step=0.5)
 rsiShowDash   = input.bool(true,  "Show RSI row on dashboard",     group=grpRSI)
 rsiBypassSweep= input.bool(false, "Bypass RSI on Sweep combos",    group=grpRSI)
-rsiSweepOB    = input.float(60.0, "Sweep: block BUY above",        group=grpRSI, minval=50.0, maxval=95.0, step=0.5)
-rsiSweepOS    = input.float(40.0, "Sweep: block SELL below",       group=grpRSI, minval=5.0,  maxval=50.0, step=0.5)
+rsiSweepOB    = input.float(60.0, "Sweep: block BUY above",        group=grpRSI, step=0.5)
+rsiSweepOS    = input.float(40.0, "Sweep: block SELL below",       group=grpRSI, step=0.5)
 
 rsiVal     = ta.rsi(close, rsiLength)
 rsiBlockBuy  = rsiEnable and not na(rsiVal) and rsiVal >= rsiOverbought
