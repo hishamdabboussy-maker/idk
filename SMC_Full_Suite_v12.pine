@@ -1,5 +1,17 @@
 //@version=5
-indicator("SMC Full Suite v12", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+indicator("SMC Full Suite v12.1", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ── v12.1 fixes (signal precision / direction) ────────────────────────────────
+// 1. isBearSweep() rewritten as a proper mirror of isBullSweep() — old version
+//    was mathematically always-true on bear candles, defeating the sweep filter.
+// 2. bearBodyIn() rewritten symmetrically to bullBodyIn() — old version
+//    over-triggered bear zone touches because it only checked `high >= zL`.
+// 3. Bear FVG / IFVG / previous-bar touch checks now use the corrected
+//    body-in logic (no more asymmetric inline tests).
+// 4. RSI confluence no longer counts raw overbought/oversold (mean-reversion)
+//    as bull/bear confluence — only RSI divergence counts. Extremes contradict
+//    trend in a trend-following block framework and were causing reverse signals.
+// ──────────────────────────────────────────────────────────────────────────────
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  SETTINGS
@@ -185,13 +197,19 @@ bullBodyIn(zH, zL) =>
     close > open and bLo <= zH and bLo >= zL
 
 bearBodyIn(zH, zL) =>
-    high >= zL and close < open and close < zH
+    // Mirror of bullBodyIn: bear candle whose body-high sits inside the zone.
+    bHi = math.max(open, close)
+    close < open and bHi >= zL and bHi <= zH
 
 isBullSweep() =>
     candleRange > 0 and (lowerWick / candleRange >= sweepRatio) and close > open
 
 isBearSweep() =>
-    candleRange > 0 and close < open and high >= (bodyHigh * (1.0 - sweepRatio * 0.5))
+    // Proper mirror of isBullSweep: bear candle with strong upper wick that
+    // swept highs and rejected down. Old formula `high >= bodyHigh * (1 - x)`
+    // was always true (high is always >= bodyHigh), so the sweep filter never
+    // rejected bearish entries. This fix restores symmetry.
+    candleRange > 0 and (upperWick / candleRange >= sweepRatio) and close < open
 
 zonesOverlap(aH, aL, bH, bL) =>
     aH >= bL and aL <= bH
@@ -1042,8 +1060,8 @@ rsiHighNow    = ta.highest(rsiVal, rsiDivLB)
 rsiHighPrev   = ta.highest(rsiVal, rsiDivLB)[rsiDivLB]
 rsiBearDiv    = priceHighNow > priceHighPrev and rsiHighNow < rsiHighPrev and rsiOverbought
 
-rsiBullSignal = useRSI and (rsiOversold or rsiBullDiv)
-rsiBearSignal = useRSI and (rsiOverbought or rsiBearDiv)
+rsiBullSignal = useRSI and rsiBullDiv
+rsiBearSignal = useRSI and rsiBearDiv
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ADX (Trend Strength)
@@ -1172,7 +1190,8 @@ if showOB
             if not array.get(obBearMitig, i)
                 zH = array.get(obBearHi, i)
                 zL = array.get(obBearLo, i)
-                if high[1] >= zL and close[1] < open[1] and close[1] < zH
+                prevBh = math.max(open[1], close[1])
+                if close[1] < open[1] and prevBh >= zL and prevBh <= zH
                     touchBearOB_1 := true
                     break
 
@@ -1191,7 +1210,8 @@ if showRB
             if not array.get(rbBearMitig, i)
                 zH = array.get(rbBearHi, i)
                 zL = array.get(rbBearLo, i)
-                if high[1] >= zL and close[1] < open[1] and close[1] < zH
+                prevBh = math.max(open[1], close[1])
+                if close[1] < open[1] and prevBh >= zL and prevBh <= zH
                     touchBearRB_1 := true
                     break
 
@@ -1208,7 +1228,8 @@ if showBB
         for i = 0 to array.size(bbBearBoxes) - 1
             zH = array.get(bbBearHi, i)
             zL = array.get(bbBearLo, i)
-            if high[1] >= zL and close[1] < open[1] and close[1] < zH
+            prevBh = math.max(open[1], close[1])
+            if close[1] < open[1] and prevBh >= zL and prevBh <= zH
                 touchBearBB_1 := true
                 break
 
@@ -1227,9 +1248,7 @@ if showFVG
     if array.size(fvgBearBoxes) > 0
         for i = 0 to array.size(fvgBearBoxes) - 1
             if not array.get(fvgBearDead, i)
-                zH = array.get(fvgBearTop, i)
-                zL = array.get(fvgBearBot, i)
-                if high >= zL and close < open and close < zH
+                if bearBodyIn(array.get(fvgBearTop, i), array.get(fvgBearBot, i))
                     inBearFVGz := true
                     break
 
@@ -1241,9 +1260,7 @@ if showIFVG
                 break
     if array.size(ifvgBearBoxes) > 0
         for i = 0 to array.size(ifvgBearBoxes) - 1
-            zH = array.get(ifvgBearTop, i)
-            zL = array.get(ifvgBearBot, i)
-            if high >= zL and close < open and close < zH
+            if bearBodyIn(array.get(ifvgBearTop, i), array.get(ifvgBearBot, i))
                 inBearIFVGz := true
                 break
 
