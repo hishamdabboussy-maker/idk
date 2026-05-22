@@ -1435,9 +1435,11 @@ if showDashboard and barstate.islast
     table.cell(dash, 1, 2, extTrTxt,         text_color=extTrCol,    text_size=dashSz)
 
     // PD location
-    pdTxt = inPremium ? "PREMIUM " + str.tostring(priceLoc, "#.0") + "%" :
-            inDiscount ? "DISCOUNT " + str.tostring(priceLoc, "#.0") + "%" :
-            "EQUILIBRIUM"
+    pdTxt = "EQUILIBRIUM"
+    if inPremium
+        pdTxt := "PREMIUM " + str.tostring(priceLoc, "#.0") + "%"
+    else if inDiscount
+        pdTxt := "DISCOUNT " + str.tostring(priceLoc, "#.0") + "%"
     pdCol = inPremium ? pdPremColor : inDiscount ? pdDiscColor : color.gray
     table.cell(dash, 0, 3, "PD location", text_color=color.white, text_size=dashSz)
     table.cell(dash, 1, 3, pdTxt,         text_color=color.new(pdCol, 0), text_size=dashSz)
