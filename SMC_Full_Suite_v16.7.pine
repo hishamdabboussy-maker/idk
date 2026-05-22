@@ -1222,15 +1222,17 @@ buyCombo8 = sigComboOBBB      and ((rBullOB  and nBullBB)   or (rBullBB   and nB
 
 buyComboFire = buyCombo1 or buyCombo2 or buyCombo3 or buyCombo4 or buyCombo5 or buyCombo6 or buyCombo7 or buyCombo8
 
+// Primary name (used for color lookup & per-combo color). Sweep-prioritized so
+// the dominant trade context (recent liquidity sweep) always wins the color.
 buyComboName = ""
-if buyCombo1
-    buyComboName := "OB+FVG"
-else if buyCombo2
-    buyComboName := "BB+IFVG"
-else if buyCombo3
+if buyCombo3
     buyComboName := rBullOB ? "SWEEP+OB" : "SWEEP+BB"
 else if buyCombo4
     buyComboName := "SWEEP+FVG"
+else if buyCombo1
+    buyComboName := "OB+FVG"
+else if buyCombo2
+    buyComboName := "BB+IFVG"
 else if buyCombo5
     buyComboName := "OB+RB"
 else if buyCombo6
@@ -1239,6 +1241,26 @@ else if buyCombo7
     buyComboName := "RB+FVG"
 else if buyCombo8
     buyComboName := "OB+BB"
+
+// Full list of EVERY combo firing on this bar — shown in the signal label so
+// you always see the complete confluence (e.g. "SWEEP+FVG | OB+FVG | RB+FVG").
+buyComboList = ""
+if buyCombo3
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + (rBullOB ? "SWEEP+OB" : "SWEEP+BB")
+if buyCombo4
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "SWEEP+FVG"
+if buyCombo1
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "OB+FVG"
+if buyCombo2
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "BB+IFVG"
+if buyCombo5
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "OB+RB"
+if buyCombo6
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "BB+FVG"
+if buyCombo7
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "RB+FVG"
+if buyCombo8
+    buyComboList := buyComboList + (buyComboList == "" ? "" : " | ") + "OB+BB"
 
 // ── Combo evaluation — SELL ───────────────────────────────────────────────────
 rBearOB   = hasReactBearOB()
@@ -1263,15 +1285,16 @@ sellCombo8 = sigComboOBBB      and ((rBearOB  and nBearBB)   or (rBearBB   and n
 
 sellComboFire = sellCombo1 or sellCombo2 or sellCombo3 or sellCombo4 or sellCombo5 or sellCombo6 or sellCombo7 or sellCombo8
 
+// Sweep-prioritized primary name (mirror of BUY logic above).
 sellComboName = ""
-if sellCombo1
-    sellComboName := "OB+FVG"
-else if sellCombo2
-    sellComboName := "BB+IFVG"
-else if sellCombo3
+if sellCombo3
     sellComboName := rBearOB ? "SWEEP+OB" : "SWEEP+BB"
 else if sellCombo4
     sellComboName := "SWEEP+FVG"
+else if sellCombo1
+    sellComboName := "OB+FVG"
+else if sellCombo2
+    sellComboName := "BB+IFVG"
 else if sellCombo5
     sellComboName := "OB+RB"
 else if sellCombo6
@@ -1281,6 +1304,25 @@ else if sellCombo7
 else if sellCombo8
     sellComboName := "OB+BB"
 
+// Full list of every SELL combo firing this bar.
+sellComboList = ""
+if sellCombo3
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + (rBearOB ? "SWEEP+OB" : "SWEEP+BB")
+if sellCombo4
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "SWEEP+FVG"
+if sellCombo1
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "OB+FVG"
+if sellCombo2
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "BB+IFVG"
+if sellCombo5
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "OB+RB"
+if sellCombo6
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "BB+FVG"
+if sellCombo7
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "RB+FVG"
+if sellCombo8
+    sellComboList := sellComboList + (sellComboList == "" ? "" : " | ") + "OB+BB"
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  PENDING-CONFIRMATION ENGINE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1288,13 +1330,17 @@ else if sellCombo8
 var int    pendBuyBar    = -9999
 var float  pendBuyTrigLo = na
 var string pendBuyName   = ""
+var string pendBuyList   = ""
 
 var int    pendSellBar    = -9999
 var float  pendSellTrigHi = na
 var string pendSellName   = ""
+var string pendSellList   = ""
 
 fireBuyName   = ""
+fireBuyList   = ""
 fireSellName  = ""
+fireSellList  = ""
 buyPendRegistered  = false
 sellPendRegistered = false
 buyFiredImmediate  = false
@@ -1303,23 +1349,27 @@ sellFiredImmediate = false
 if buyComboFire
     if sigConfirmBars == 0
         fireBuyName       := buyComboName
+        fireBuyList       := buyComboList
         buyFiredImmediate := true
         pendBuyBar        := -9999
     else
         pendBuyBar        := bar_index
         pendBuyTrigLo     := low
         pendBuyName       := buyComboName
+        pendBuyList       := buyComboList
         buyPendRegistered := true
 
 if sellComboFire
     if sigConfirmBars == 0
         fireSellName       := sellComboName
+        fireSellList       := sellComboList
         sellFiredImmediate := true
         pendSellBar        := -9999
     else
         pendSellBar        := bar_index
         pendSellTrigHi     := high
         pendSellName       := sellComboName
+        pendSellList       := sellComboList
         sellPendRegistered := true
 
 if not buyFiredImmediate and pendBuyBar >= 0
@@ -1327,6 +1377,7 @@ if not buyFiredImmediate and pendBuyBar >= 0
         pendBuyBar := -9999
     else if (bar_index - pendBuyBar) >= sigConfirmBars
         fireBuyName := pendBuyName
+        fireBuyList := pendBuyList
         pendBuyBar  := -9999
 
 if not sellFiredImmediate and pendSellBar >= 0
@@ -1334,6 +1385,7 @@ if not sellFiredImmediate and pendSellBar >= 0
         pendSellBar := -9999
     else if (bar_index - pendSellBar) >= sigConfirmBars
         fireSellName := pendSellName
+        fireSellList := pendSellList
         pendSellBar  := -9999
 
 // ── Cooldown gate ─────────────────────────────────────────────────────────────
@@ -1366,7 +1418,7 @@ if sellReady
 // ── Labels ────────────────────────────────────────────────────────────────────
 if showSigLabels and buyReady
     label.new(bar_index, low - candleRange * 0.5,
-         "BUY " + fireBuyName + "\n" + str.tostring(close, format.mintick),
+         "BUY " + fireBuyList + "\n" + str.tostring(close, format.mintick),
          style=label.style_label_up,
          color=sigColorBuy(fireBuyName),
          textcolor=color.white,
@@ -1374,7 +1426,7 @@ if showSigLabels and buyReady
 
 if showSigLabels and sellReady
     label.new(bar_index, high + candleRange * 0.5,
-         "SELL " + fireSellName + "\n" + str.tostring(close, format.mintick),
+         "SELL " + fireSellList + "\n" + str.tostring(close, format.mintick),
          style=label.style_label_down,
          color=sigColorSell(fireSellName),
          textcolor=color.white,
@@ -1430,10 +1482,10 @@ var string lastSigText  = "—"
 var color  lastSigColor = color.gray
 
 if buyReady
-    lastSigText  := "BUY " + fireBuyName
+    lastSigText  := "BUY " + fireBuyList
     lastSigColor := sigColorBuy(fireBuyName)
 if sellReady
-    lastSigText  := "SELL " + fireSellName
+    lastSigText  := "SELL " + fireSellList
     lastSigColor := sigColorSell(fireSellName)
 
 var table dashTable = table.new(dashPos, 2, 14,
@@ -1509,11 +1561,11 @@ if showDashboard and barstate.islast
     pendCol = color.new(color.gray, 0)
     if pendBuyBar >= 0
         waitLeft = math.max(0, sigConfirmBars - (bar_index - pendBuyBar))
-        pendTxt := "▲ " + pendBuyName + " (" + str.tostring(waitLeft) + "b)"
+        pendTxt := "▲ " + pendBuyList + " (" + str.tostring(waitLeft) + "b)"
         pendCol := color.new(#00C853, 0)
     else if pendSellBar >= 0
         waitLeft = math.max(0, sigConfirmBars - (bar_index - pendSellBar))
-        pendTxt := "▼ " + pendSellName + " (" + str.tostring(waitLeft) + "b)"
+        pendTxt := "▼ " + pendSellList + " (" + str.tostring(waitLeft) + "b)"
         pendCol := color.new(#F23645, 0)
     else
         pendTxt := "—"
@@ -1580,10 +1632,10 @@ if showDashboard and barstate.islast
             buyGateTxt := "cooldown " + str.tostring(sigCooldown - (bar_index - lastBuyBar)) + "b"
             buyGateCol := color.new(#FF6D00, 0)
         else
-            buyGateTxt := "✓ " + buyComboName
+            buyGateTxt := "✓ " + buyComboList
             buyGateCol := color.new(#00C853, 0)
     else if pendBuyBar >= 0
-        buyGateTxt := "pending " + pendBuyName
+        buyGateTxt := "pending " + pendBuyList
         buyGateCol := color.new(#00C853, 30)
     else
         buyGateTxt := "—"
@@ -1613,10 +1665,10 @@ if showDashboard and barstate.islast
             sellGateTxt := "cooldown " + str.tostring(sigCooldown - (bar_index - lastSellBar)) + "b"
             sellGateCol := color.new(#FF6D00, 0)
         else
-            sellGateTxt := "✓ " + sellComboName
+            sellGateTxt := "✓ " + sellComboList
             sellGateCol := color.new(#F23645, 0)
     else if pendSellBar >= 0
-        sellGateTxt := "pending " + pendSellName
+        sellGateTxt := "pending " + pendSellList
         sellGateCol := color.new(#F23645, 30)
     else
         sellGateTxt := "—"
