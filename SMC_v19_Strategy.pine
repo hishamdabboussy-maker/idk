@@ -189,7 +189,7 @@ if array.size(obBearHi) > 0
         if not array.get(obBearMitig, i) and close > array.get(obBearHi, i)
             array.set(obBearMitig, i, true)
 
-// Tap detection
+// Tap detection — relaxed: any contact with zone that doesn't blow through
 tappingBullOB = false
 bullOBLo = float(na)
 if array.size(obBullHi) > 0
@@ -197,7 +197,7 @@ if array.size(obBullHi) > 0
         if not array.get(obBullMitig, i)
             zH = array.get(obBullHi, i)
             zL = array.get(obBullLo, i)
-            if low <= zH and close >= zL and close > open
+            if low <= zH and close >= zL
                 tappingBullOB := true
                 bullOBLo := zL
                 break
@@ -209,7 +209,7 @@ if array.size(obBearHi) > 0
         if not array.get(obBearMitig, i)
             zH = array.get(obBearHi, i)
             zL = array.get(obBearLo, i)
-            if high >= zL and close <= zH and close < open
+            if high >= zL and close <= zH
                 tappingBearOB := true
                 bearOBHi := zH
                 break
@@ -529,6 +529,27 @@ macroOk = not useMacroFilter or inMacro
 bullReversal = recentEQLSweep and intBullCHoCH
 bearReversal = recentEQHSweep and intBearCHoCH
 
+// Arm a reversal flag for sigLookback bars so the OB/FVG tap can happen AFTER
+// the CHoCH (which is the realistic sequence: sweep -> CHoCH -> retrace -> tap).
+var int bullArmed = 0
+var int bearArmed = 0
+if bullReversal
+    bullArmed := sigLookback
+if bearReversal
+    bearArmed := sigLookback
+if bullArmed > 0 and not bullReversal
+    bullArmed -= 1
+if bearArmed > 0 and not bearReversal
+    bearArmed -= 1
+// A new opposite reversal cancels the armed flag
+if bearReversal
+    bullArmed := 0
+if bullReversal
+    bearArmed := 0
+
+bullArmedActive = bullArmed > 0
+bearArmedActive = bearArmed > 0
+
 bullTap = tappingBullOB or tappingBullFVG
 bearTap = tappingBearOB or tappingBearFVG
 
@@ -539,13 +560,13 @@ trendOkLong  = not useHTFTrend or htfEmaBull
 trendOkShort = not useHTFTrend or htfEmaBear
 
 bullEntry = inDateRange and sessOk and macroOk and trendOkLong  and
-   (not useReversalEntry or bullReversal) and
-   (not useOBTap         or bullTap)      and
+   (not useReversalEntry or bullArmedActive) and
+   (not useOBTap         or bullTap)         and
    (not useHTFConfluence or bullHTFOk)
 
 bearEntry = inDateRange and sessOk and macroOk and trendOkShort and
-   (not useReversalEntry or bearReversal) and
-   (not useOBTap         or bearTap)      and
+   (not useReversalEntry or bearArmedActive) and
+   (not useOBTap         or bearTap)         and
    (not useHTFConfluence or bearHTFOk)
 
 // ══════════════════════════════════════════════════════════════════════════════
