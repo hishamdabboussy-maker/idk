@@ -1,0 +1,689 @@
+//@version=5
+strategy("SMC v19 Strategy", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     pyramiding=0,
+     commission_type=strategy.commission.percent,
+     commission_value=0.04,           // 0.04% per side ~ typical retail crypto
+     slippage=2,
+     calc_on_every_tick=false,
+     process_orders_on_close=true,
+     max_boxes_count=200, max_lines_count=200, max_labels_count=200)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMC v19 STRATEGY
+//
+//  Trade rules (default):
+//    LONG  = bullish CHoCH within N bars after a sell-side liquidity sweep,
+//            while price is in HTF discount AND tapping a bullish OB or FVG
+//    SHORT = mirror
+//
+//  Risk:
+//    SL  = swing low (long) / swing high (short) +/- ATR buffer
+//    TP1 = R-multiple (default 1R, partial close)
+//    TP2 = nearest opposing liquidity OR R-multiple TP2
+//
+//  Filters:
+//    - Trade only inside selected sessions (London + NY by default)
+//    - Optional ICT macro window filter
+//    - Optional HTF trend filter (only longs in HTF bull, only shorts in HTF bear)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpEntry = "Entry rules"
+useReversalEntry = input.bool(true,  "Require sweep + CHoCH reversal", group=grpEntry)
+useOBTap         = input.bool(true,  "Require OB or FVG tap",         group=grpEntry)
+useHTFConfluence = input.bool(true,  "Require HTF OB/FVG/OTE",         group=grpEntry)
+sigLookback      = input.int(10,     "Sweep -> CHoCH lookback (bars)", group=grpEntry, minval=2, maxval=50)
+
+grpFilter = "Filters"
+useSessFilter   = input.bool(true,  "Trade only in sessions", group=grpFilter)
+allowLondon     = input.bool(true,  "London", group=grpFilter, inline="sess")
+allowNY         = input.bool(true,  "New York", group=grpFilter, inline="sess")
+allowAsia       = input.bool(false, "Asia", group=grpFilter, inline="sess")
+useMacroFilter  = input.bool(false, "Trade only inside ICT macros", group=grpFilter)
+useHTFTrend     = input.bool(false, "Trade only with HTF trend (EMA)", group=grpFilter)
+htfTrendLen     = input.int(50,     "HTF EMA length", group=grpFilter, minval=10, maxval=200)
+htfTrendTF      = input.timeframe("D", "HTF EMA timeframe", group=grpFilter)
+
+grpRisk = "Risk / Exits"
+riskPct      = input.float(1.0, "Risk per trade (% of equity)", group=grpRisk, minval=0.1, maxval=10.0, step=0.1)
+atrBuf       = input.float(0.5, "Stop buffer (x ATR14)",       group=grpRisk, minval=0.0, maxval=3.0, step=0.1)
+useTP1       = input.bool(true,  "Use TP1",                     group=grpRisk)
+tp1R         = input.float(1.0,  "TP1 R-multiple",              group=grpRisk, minval=0.5, maxval=5.0, step=0.1)
+tp1Pct       = input.float(50.0, "TP1 close %",                 group=grpRisk, minval=10.0, maxval=100.0, step=5.0)
+useTP2       = input.bool(true,  "Use TP2",                     group=grpRisk)
+tp2R         = input.float(2.5,  "TP2 R-multiple",              group=grpRisk, minval=1.0, maxval=10.0, step=0.1)
+moveBE       = input.bool(true,  "Move SL to breakeven after TP1", group=grpRisk)
+useTimeExit  = input.bool(true,  "Time-based exit",             group=grpRisk)
+maxBars      = input.int(50,     "Max bars in trade",           group=grpRisk, minval=5, maxval=500)
+exitOpposite = input.bool(true,  "Exit on opposite reversal",   group=grpRisk)
+
+grpDate = "Backtest window"
+useDateRange = input.bool(false, "Limit backtest to date range", group=grpDate)
+fromDate     = input.time(timestamp("2020-01-01"), "From", group=grpDate)
+toDate       = input.time(timestamp("2026-01-01"), "To",   group=grpDate)
+
+inDateRange = not useDateRange or (time >= fromDate and time <= toDate)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+candleRange = high - low
+atr14 = ta.atr(14)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STRUCTURE (close-break)
+// ══════════════════════════════════════════════════════════════════════════════
+
+intLen = 5
+extLen = 25
+intPH = ta.pivothigh(high, intLen, intLen)
+intPL = ta.pivotlow(low,   intLen, intLen)
+extPH = ta.pivothigh(high, extLen, extLen)
+extPL = ta.pivotlow(low,   extLen, extLen)
+
+var float intLastPH = na
+var float intLastPL = na
+var float extLastPH = na
+var float extLastPL = na
+var float prevExtPH = na
+var float prevExtPL = na
+if not na(intPH)
+    intLastPH := intPH
+if not na(intPL)
+    intLastPL := intPL
+if not na(extPH)
+    prevExtPH := extLastPH
+    extLastPH := extPH
+if not na(extPL)
+    prevExtPL := extLastPL
+    extLastPL := extPL
+
+var int intTrend = 0
+var int extTrend = 0
+
+intBullBOS_raw = not na(intLastPH) and close > intLastPH and close[1] <= intLastPH
+intBearBOS_raw = not na(intLastPL) and close < intLastPL and close[1] >= intLastPL
+extBullBOS_raw = not na(extLastPH) and close > extLastPH and close[1] <= extLastPH
+extBearBOS_raw = not na(extLastPL) and close < extLastPL and close[1] >= extLastPL
+
+intBullCHoCH = false
+intBearCHoCH = false
+if intBullBOS_raw
+    if intTrend == -1
+        intBullCHoCH := true
+    intTrend := 1
+if intBearBOS_raw
+    if intTrend == 1
+        intBearCHoCH := true
+    intTrend := -1
+if extBullBOS_raw
+    extTrend := 1
+if extBearBOS_raw
+    extTrend := -1
+
+if intBullBOS_raw
+    intLastPH := na
+if intBearBOS_raw
+    intLastPL := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ORDER BLOCKS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var obBullHi = array.new_float()
+var obBullLo = array.new_float()
+var obBullMitig = array.new_bool()
+var obBearHi = array.new_float()
+var obBearLo = array.new_float()
+var obBearMitig = array.new_bool()
+OB_MAX = 5
+
+if intBullBOS_raw
+    obIdx = 0
+    found = false
+    for k = 1 to math.min(intLen * 2, 50)
+        if close[k] < open[k]
+            obIdx := k
+            found := true
+            break
+    if found
+        while array.size(obBullHi) >= OB_MAX
+            array.shift(obBullHi)
+            array.shift(obBullLo)
+            array.shift(obBullMitig)
+        array.push(obBullHi, high[obIdx])
+        array.push(obBullLo, low[obIdx])
+        array.push(obBullMitig, false)
+
+if intBearBOS_raw
+    obIdx = 0
+    found = false
+    for k = 1 to math.min(intLen * 2, 50)
+        if close[k] > open[k]
+            obIdx := k
+            found := true
+            break
+    if found
+        while array.size(obBearHi) >= OB_MAX
+            array.shift(obBearHi)
+            array.shift(obBearLo)
+            array.shift(obBearMitig)
+        array.push(obBearHi, high[obIdx])
+        array.push(obBearLo, low[obIdx])
+        array.push(obBearMitig, false)
+
+// Mitigation
+if array.size(obBullHi) > 0
+    for i = 0 to array.size(obBullHi) - 1
+        if not array.get(obBullMitig, i) and close < array.get(obBullLo, i)
+            array.set(obBullMitig, i, true)
+if array.size(obBearHi) > 0
+    for i = 0 to array.size(obBearHi) - 1
+        if not array.get(obBearMitig, i) and close > array.get(obBearHi, i)
+            array.set(obBearMitig, i, true)
+
+// Tap detection
+tappingBullOB = false
+bullOBLo = na
+if array.size(obBullHi) > 0
+    for i = array.size(obBullHi) - 1 to 0
+        if not array.get(obBullMitig, i)
+            zH = array.get(obBullHi, i)
+            zL = array.get(obBullLo, i)
+            if low <= zH and close >= zL and close > open
+                tappingBullOB := true
+                bullOBLo := zL
+                break
+
+tappingBearOB = false
+bearOBHi = na
+if array.size(obBearHi) > 0
+    for i = array.size(obBearHi) - 1 to 0
+        if not array.get(obBearMitig, i)
+            zH = array.get(obBearHi, i)
+            zL = array.get(obBearLo, i)
+            if high >= zL and close <= zH and close < open
+                tappingBearOB := true
+                bearOBHi := zH
+                break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FAIR VALUE GAPS (close-only mitigation)
+// ══════════════════════════════════════════════════════════════════════════════
+
+minGap = math.max(close * 0.001, 0.3 * atr14)
+isBullFVG = (low - high[2]) > minGap
+isBearFVG = (low[2] - high) > minGap
+
+var fvgBullTop = array.new_float()
+var fvgBullBot = array.new_float()
+var fvgBullDead = array.new_bool()
+var fvgBearTop = array.new_float()
+var fvgBearBot = array.new_float()
+var fvgBearDead = array.new_bool()
+FVG_MAX = 5
+
+if isBullFVG
+    while array.size(fvgBullTop) >= FVG_MAX
+        array.shift(fvgBullTop)
+        array.shift(fvgBullBot)
+        array.shift(fvgBullDead)
+    array.push(fvgBullTop, low)
+    array.push(fvgBullBot, high[2])
+    array.push(fvgBullDead, false)
+if isBearFVG
+    while array.size(fvgBearTop) >= FVG_MAX
+        array.shift(fvgBearTop)
+        array.shift(fvgBearBot)
+        array.shift(fvgBearDead)
+    array.push(fvgBearTop, low[2])
+    array.push(fvgBearBot, high)
+    array.push(fvgBearDead, false)
+
+if array.size(fvgBullTop) > 0
+    for i = 0 to array.size(fvgBullTop) - 1
+        if not array.get(fvgBullDead, i) and close < array.get(fvgBullBot, i)
+            array.set(fvgBullDead, i, true)
+if array.size(fvgBearTop) > 0
+    for i = 0 to array.size(fvgBearTop) - 1
+        if not array.get(fvgBearDead, i) and close > array.get(fvgBearTop, i)
+            array.set(fvgBearDead, i, true)
+
+tappingBullFVG = false
+if array.size(fvgBullTop) > 0
+    for i = array.size(fvgBullTop) - 1 to 0
+        if not array.get(fvgBullDead, i)
+            zT = array.get(fvgBullTop, i)
+            zB = array.get(fvgBullBot, i)
+            if low <= zT and close >= zB
+                tappingBullFVG := true
+                break
+tappingBearFVG = false
+if array.size(fvgBearTop) > 0
+    for i = array.size(fvgBearTop) - 1 to 0
+        if not array.get(fvgBearDead, i)
+            zT = array.get(fvgBearTop, i)
+            zB = array.get(fvgBearBot, i)
+            if high >= zB and close <= zT
+                tappingBearFVG := true
+                break
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY + SWEEPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+liqLen = 10
+liqTol = 0.05
+liqMin = 2
+
+liqPH = ta.pivothigh(high, liqLen, liqLen)
+liqPL = ta.pivotlow(low,   liqLen, liqLen)
+
+var pendHi = array.new_float()
+var pendLo = array.new_float()
+var liqHi  = array.new_float()
+var liqLo  = array.new_float()
+var liqHiSwept = array.new_bool()
+var liqLoSwept = array.new_bool()
+PEND_KEEP = 12
+LIQ_MAX = 5
+
+if not na(liqPH)
+    if array.size(pendHi) >= PEND_KEEP
+        array.shift(pendHi)
+    array.push(pendHi, liqPH)
+    tolV = liqPH * liqTol / 100.0
+    matched = false
+    if array.size(liqHi) > 0
+        for i = 0 to array.size(liqHi) - 1
+            if not array.get(liqHiSwept, i) and math.abs(array.get(liqHi, i) - liqPH) <= tolV
+                matched := true
+                break
+    cluster = 0
+    if array.size(pendHi) > 0
+        for i = 0 to array.size(pendHi) - 1
+            if math.abs(array.get(pendHi, i) - liqPH) <= tolV
+                cluster += 1
+    if not matched and cluster >= liqMin
+        while array.size(liqHi) >= LIQ_MAX
+            array.shift(liqHi)
+            array.shift(liqHiSwept)
+        array.push(liqHi, liqPH)
+        array.push(liqHiSwept, false)
+if not na(liqPL)
+    if array.size(pendLo) >= PEND_KEEP
+        array.shift(pendLo)
+    array.push(pendLo, liqPL)
+    tolV = liqPL * liqTol / 100.0
+    matched = false
+    if array.size(liqLo) > 0
+        for i = 0 to array.size(liqLo) - 1
+            if not array.get(liqLoSwept, i) and math.abs(array.get(liqLo, i) - liqPL) <= tolV
+                matched := true
+                break
+    cluster = 0
+    if array.size(pendLo) > 0
+        for i = 0 to array.size(pendLo) - 1
+            if math.abs(array.get(pendLo, i) - liqPL) <= tolV
+                cluster += 1
+    if not matched and cluster >= liqMin
+        while array.size(liqLo) >= LIQ_MAX
+            array.shift(liqLo)
+            array.shift(liqLoSwept)
+        array.push(liqLo, liqPL)
+        array.push(liqLoSwept, false)
+
+// Sweep detection
+var int lastEQLSweepBar = -9999
+var int lastEQHSweepBar = -9999
+sweepEQL = false
+sweepEQH = false
+if array.size(liqLo) > 0
+    for i = 0 to array.size(liqLo) - 1
+        if not array.get(liqLoSwept, i)
+            lvl = array.get(liqLo, i)
+            if low < lvl and close > lvl
+                lastEQLSweepBar := bar_index
+                array.set(liqLoSwept, i, true)
+                sweepEQL := true
+            else if close < lvl
+                array.set(liqLoSwept, i, true)
+if array.size(liqHi) > 0
+    for i = 0 to array.size(liqHi) - 1
+        if not array.get(liqHiSwept, i)
+            lvl = array.get(liqHi, i)
+            if high > lvl and close < lvl
+                lastEQHSweepBar := bar_index
+                array.set(liqHiSwept, i, true)
+                sweepEQH := true
+            else if close > lvl
+                array.set(liqHiSwept, i, true)
+
+recentEQLSweep = (bar_index - lastEQLSweepBar) <= sigLookback
+recentEQHSweep = (bar_index - lastEQHSweepBar) <= sigLookback
+
+// Find nearest opposing liquidity for TP2
+nearestEQHabove = na
+if array.size(liqHi) > 0
+    for i = 0 to array.size(liqHi) - 1
+        if not array.get(liqHiSwept, i)
+            lvl = array.get(liqHi, i)
+            if lvl > close and (na(nearestEQHabove) or lvl < nearestEQHabove)
+                nearestEQHabove := lvl
+nearestEQLbelow = na
+if array.size(liqLo) > 0
+    for i = 0 to array.size(liqLo) - 1
+        if not array.get(liqLoSwept, i)
+            lvl = array.get(liqLo, i)
+            if lvl < close and (na(nearestEQLbelow) or lvl > nearestEQLbelow)
+                nearestEQLbelow := lvl
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF CONTEXT
+// ══════════════════════════════════════════════════════════════════════════════
+
+htfTF = "240"
+[htfH, htfL, htfC, htfO] = request.security(syminfo.tickerid, htfTF, [high, low, close, open], lookahead=barmerge.lookahead_off)
+htfPivH = request.security(syminfo.tickerid, htfTF, ta.pivothigh(high, 5, 5)[1], lookahead=barmerge.lookahead_off)
+htfPivL = request.security(syminfo.tickerid, htfTF, ta.pivotlow(low,  5, 5)[1], lookahead=barmerge.lookahead_off)
+
+var float htfLastPH = na
+var float htfLastPL = na
+if not na(htfPivH)
+    htfLastPH := htfPivH
+if not na(htfPivL)
+    htfLastPL := htfPivL
+
+htfBullBOS = not na(htfLastPH) and htfC > htfLastPH and htfC[1] <= htfLastPH
+htfBearBOS = not na(htfLastPL) and htfC < htfLastPL and htfC[1] >= htfLastPL
+if htfBullBOS
+    htfLastPH := na
+if htfBearBOS
+    htfLastPL := na
+
+var htfBullObHi = array.new_float()
+var htfBullObLo = array.new_float()
+var htfBullObMitig = array.new_bool()
+var htfBearObHi = array.new_float()
+var htfBearObLo = array.new_float()
+var htfBearObMitig = array.new_bool()
+HTF_OB_MAX = 3
+
+if htfBullBOS
+    obIdx = 0
+    found = false
+    for k = 1 to 10
+        if htfC[k] < htfO[k]
+            obIdx := k
+            found := true
+            break
+    if found
+        while array.size(htfBullObHi) >= HTF_OB_MAX
+            array.shift(htfBullObHi)
+            array.shift(htfBullObLo)
+            array.shift(htfBullObMitig)
+        array.push(htfBullObHi, htfH[obIdx])
+        array.push(htfBullObLo, htfL[obIdx])
+        array.push(htfBullObMitig, false)
+if htfBearBOS
+    obIdx = 0
+    found = false
+    for k = 1 to 10
+        if htfC[k] > htfO[k]
+            obIdx := k
+            found := true
+            break
+    if found
+        while array.size(htfBearObHi) >= HTF_OB_MAX
+            array.shift(htfBearObHi)
+            array.shift(htfBearObLo)
+            array.shift(htfBearObMitig)
+        array.push(htfBearObHi, htfH[obIdx])
+        array.push(htfBearObLo, htfL[obIdx])
+        array.push(htfBearObMitig, false)
+
+if array.size(htfBullObHi) > 0
+    for i = 0 to array.size(htfBullObHi) - 1
+        if not array.get(htfBullObMitig, i) and close < array.get(htfBullObLo, i)
+            array.set(htfBullObMitig, i, true)
+if array.size(htfBearObHi) > 0
+    for i = 0 to array.size(htfBearObHi) - 1
+        if not array.get(htfBearObMitig, i) and close > array.get(htfBearObHi, i)
+            array.set(htfBearObMitig, i, true)
+
+inHTFBullOB = false
+inHTFBearOB = false
+if array.size(htfBullObHi) > 0
+    for i = 0 to array.size(htfBullObHi) - 1
+        if not array.get(htfBullObMitig, i) and close >= array.get(htfBullObLo, i) and close <= array.get(htfBullObHi, i)
+            inHTFBullOB := true
+            break
+if array.size(htfBearObHi) > 0
+    for i = 0 to array.size(htfBearObHi) - 1
+        if not array.get(htfBearObMitig, i) and close >= array.get(htfBearObLo, i) and close <= array.get(htfBearObHi, i)
+            inHTFBearOB := true
+            break
+
+[htfH2, htfL2, htfH0, htfL0] = request.security(syminfo.tickerid, htfTF, [high[2], low[2], high, low], lookahead=barmerge.lookahead_off)
+htfBullFVG = not na(htfH2) and not na(htfL0) and (htfL0 - htfH2) > 0
+htfBearFVG = not na(htfL2) and not na(htfH0) and (htfL2 - htfH0) > 0
+inHTFBullFVG = htfBullFVG and close >= htfH2 and close <= htfL0
+inHTFBearFVG = htfBearFVG and close >= htfH0 and close <= htfL2
+
+// PD range from external swing pair
+swingHi = not na(prevExtPH) and not na(prevExtPL) ? math.max(prevExtPH, prevExtPL) : ta.highest(high, 50)
+swingLo = not na(prevExtPH) and not na(prevExtPL) ? math.min(prevExtPH, prevExtPL) : ta.lowest(low, 50)
+swingMid = math.avg(swingHi, swingLo)
+inHTFDiscount = close < swingMid
+inHTFPremium  = close > swingMid
+
+// OTE
+inOTEBull = false
+inOTEBear = false
+if extTrend == 1 and not na(extLastPL)
+    leg = swingHi - swingLo
+    oteHi = swingHi - leg * 0.62
+    oteLo = swingHi - leg * 0.79
+    inOTEBull := close <= oteHi and close >= oteLo
+if extTrend == -1 and not na(extLastPH)
+    leg = swingHi - swingLo
+    oteLo = swingLo + leg * 0.62
+    oteHi = swingLo + leg * 0.79
+    inOTEBear := close <= oteHi and close >= oteLo
+
+// HTF EMA trend
+htfEMA = request.security(syminfo.tickerid, htfTrendTF, ta.ema(close, htfTrendLen), lookahead=barmerge.lookahead_off)
+htfEmaBull = close > htfEMA
+htfEmaBear = close < htfEMA
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SESSIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+asiaSess   = "2000-0000"
+londonSess = "0200-0500"
+nySess     = "0930-1100"
+tz = "America/New_York"
+inAsia   = not na(time(timeframe.period, asiaSess,   tz))
+inLondon = not na(time(timeframe.period, londonSess, tz))
+inNY     = not na(time(timeframe.period, nySess,     tz))
+sessOk = not useSessFilter or (allowLondon and inLondon) or (allowNY and inNY) or (allowAsia and inAsia)
+
+macro1 = "0950-1010"
+macro2 = "1050-1110"
+macro3 = "1450-1510"
+inMacro = not na(time(timeframe.period, macro1, tz)) or not na(time(timeframe.period, macro2, tz)) or not na(time(timeframe.period, macro3, tz))
+macroOk = not useMacroFilter or inMacro
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COMPOSITE SETUP
+// ══════════════════════════════════════════════════════════════════════════════
+
+bullReversal = recentEQLSweep and intBullCHoCH
+bearReversal = recentEQHSweep and intBearCHoCH
+
+bullTap = tappingBullOB or tappingBullFVG
+bearTap = tappingBearOB or tappingBearFVG
+
+bullHTFOk = inHTFBullOB or inHTFBullFVG or inOTEBull or inHTFDiscount
+bearHTFOk = inHTFBearOB or inHTFBearFVG or inOTEBear or inHTFPremium
+
+trendOkLong  = not useHTFTrend or htfEmaBull
+trendOkShort = not useHTFTrend or htfEmaBear
+
+bullEntry = inDateRange and sessOk and macroOk and trendOkLong  and
+   (not useReversalEntry or bullReversal) and
+   (not useOBTap         or bullTap)      and
+   (not useHTFConfluence or bullHTFOk)
+
+bearEntry = inDateRange and sessOk and macroOk and trendOkShort and
+   (not useReversalEntry or bearReversal) and
+   (not useOBTap         or bearTap)      and
+   (not useHTFConfluence or bearHTFOk)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  RISK SIZING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Entry SL: low - buffer (long) / high + buffer (short)
+// Use the OB/FVG zone low if tapping it, else the recent swing low
+buf = atrBuf * atr14
+longSL  = bullTap and not na(bullOBLo) ? bullOBLo - buf : low - buf
+shortSL = bearTap and not na(bearOBHi) ? bearOBHi + buf : high + buf
+
+longRisk  = close - longSL
+shortRisk = shortSL - close
+
+longTP1  = close + tp1R * longRisk
+longTP2  = close + tp2R * longRisk
+shortTP1 = close - tp1R * shortRisk
+shortTP2 = close - tp2R * shortRisk
+
+// Override TP2 with nearest opposing liquidity if closer
+longTP2_liq  = not na(nearestEQHabove) ? nearestEQHabove : longTP2
+shortTP2_liq = not na(nearestEQLbelow) ? nearestEQLbelow : shortTP2
+longTP2_final  = math.min(longTP2,  longTP2_liq  > close ? longTP2_liq  : longTP2)
+shortTP2_final = math.max(shortTP2, shortTP2_liq < close ? shortTP2_liq : shortTP2)
+
+// Position sizing: risk riskPct of equity
+equity = strategy.equity
+qtyLong  = longRisk  > 0 ? (equity * riskPct / 100.0) / longRisk  : 0
+qtyShort = shortRisk > 0 ? (equity * riskPct / 100.0) / shortRisk : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ORDER EXECUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+var int  entryBar = na
+var float entrySL = na
+var bool  tp1Hit  = false
+
+if bullEntry and strategy.position_size == 0 and qtyLong > 0
+    strategy.entry("Long", strategy.long, qty=qtyLong)
+    entryBar := bar_index
+    entrySL  := longSL
+    tp1Hit   := false
+    strategy.exit("X-Long", "Long",
+         stop  = longSL,
+         limit = useTP2 ? longTP2_final : na)
+    if useTP1
+        strategy.exit("TP1-Long", "Long",
+             qty_percent = tp1Pct,
+             stop        = longSL,
+             limit       = longTP1)
+
+if bearEntry and strategy.position_size == 0 and qtyShort > 0
+    strategy.entry("Short", strategy.short, qty=qtyShort)
+    entryBar := bar_index
+    entrySL  := shortSL
+    tp1Hit   := false
+    strategy.exit("X-Short", "Short",
+         stop  = shortSL,
+         limit = useTP2 ? shortTP2_final : na)
+    if useTP1
+        strategy.exit("TP1-Short", "Short",
+             qty_percent = tp1Pct,
+             stop        = shortSL,
+             limit       = shortTP1)
+
+// Move to BE after TP1 (detect via reduced position)
+if moveBE and useTP1 and strategy.position_size > 0 and not tp1Hit
+    if strategy.position_size < qtyLong * (1.0 - tp1Pct/100.0 + 0.01)
+        tp1Hit := true
+        strategy.exit("BE-Long", "Long",
+             stop  = strategy.position_avg_price,
+             limit = useTP2 ? longTP2_final : na)
+if moveBE and useTP1 and strategy.position_size < 0 and not tp1Hit
+    if math.abs(strategy.position_size) < qtyShort * (1.0 - tp1Pct/100.0 + 0.01)
+        tp1Hit := true
+        strategy.exit("BE-Short", "Short",
+             stop  = strategy.position_avg_price,
+             limit = useTP2 ? shortTP2_final : na)
+
+// Time exit
+if useTimeExit and strategy.position_size != 0 and not na(entryBar)
+    if (bar_index - entryBar) >= maxBars
+        strategy.close_all(comment="Time")
+
+// Opposite reversal exit
+if exitOpposite
+    if strategy.position_size > 0 and bearReversal
+        strategy.close_all(comment="OppRev")
+    if strategy.position_size < 0 and bullReversal
+        strategy.close_all(comment="OppRev")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+plotshape(bullEntry and strategy.position_size == 0, title="Long entry", location=location.belowbar, style=shape.triangleup,   color=color.new(#00C853, 0), size=size.small, text="L")
+plotshape(bearEntry and strategy.position_size == 0, title="Short entry", location=location.abovebar, style=shape.triangledown, color=color.new(#F23645, 0), size=size.small, text="S")
+plotshape(bullReversal, title="Bull reversal", location=location.belowbar, style=shape.diamond, color=color.new(#00E676, 30), size=size.tiny)
+plotshape(bearReversal, title="Bear reversal", location=location.abovebar, style=shape.diamond, color=color.new(#FF5252, 30), size=size.tiny)
+
+bgcolor(strategy.position_size > 0 ? color.new(#00C853, 95) : strategy.position_size < 0 ? color.new(#F23645, 95) : na, title="Position bg")
+
+// Stats table
+var table stats = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+if barstate.islast
+    netProfit = strategy.netprofit
+    grossWins = strategy.grossprofit
+    grossLoss = strategy.grossloss
+    pf = grossLoss > 0 ? grossWins / grossLoss : 0
+    wins = strategy.wintrades
+    losses = strategy.losstrades
+    total = strategy.closedtrades
+    wr = total > 0 ? wins / total * 100.0 : 0
+    avgWin = wins > 0 ? grossWins / wins : 0
+    avgLoss = losses > 0 ? grossLoss / losses : 0
+    expR = total > 0 ? (avgWin * wr/100.0 - avgLoss * (100.0 - wr)/100.0) : 0
+    table.cell(stats, 0, 0, "Net P/L",      text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 0, str.tostring(netProfit, "#.00"), text_color=netProfit >= 0 ? color.new(#00C853, 0) : color.new(#F23645, 0), text_size=size.small)
+    table.cell(stats, 0, 1, "Profit factor", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 1, str.tostring(pf, "#.00"), text_color=color.new(color.yellow, 0), text_size=size.small)
+    table.cell(stats, 0, 2, "Win rate",      text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 2, str.tostring(wr, "#.0") + "%", text_color=color.new(color.yellow, 0), text_size=size.small)
+    table.cell(stats, 0, 3, "Trades",        text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 3, str.tostring(total) + " (W " + str.tostring(wins) + " / L " + str.tostring(losses) + ")", text_color=color.new(color.gray, 0), text_size=size.small)
+    table.cell(stats, 0, 4, "Max DD",        text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 4, str.tostring(strategy.max_drawdown, "#.00"), text_color=color.new(#F23645, 0), text_size=size.small)
+    table.cell(stats, 0, 5, "Expectancy",    text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 5, str.tostring(expR, "#.00"), text_color=color.new(color.yellow, 0), text_size=size.small)
+    table.cell(stats, 0, 6, "Avg win",       text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 6, str.tostring(avgWin, "#.00"), text_color=color.new(#00C853, 0), text_size=size.small)
+    table.cell(stats, 0, 7, "Avg loss",      text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 7, str.tostring(avgLoss, "#.00"), text_color=color.new(#F23645, 0), text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(bullEntry, "Long entry",  "SMC Long entry signal")
+alertcondition(bearEntry, "Short entry", "SMC Short entry signal")
