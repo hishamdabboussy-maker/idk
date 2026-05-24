@@ -1281,15 +1281,18 @@ liqMidCol    = input.color(color.new(color.gray, 50), "Midlines", group=grpLIQL)
 liqStyle = liqStyleIn == "Dashed" ? line.style_dashed : liqStyleIn == "Dotted" ? line.style_dotted : line.style_solid
 liqExt   = liqExtend ? extend.right : extend.none
 
-// Fetch on Daily TF so it works regardless of chart TF.
-// lookahead_on is fine here: historical daily H/L are finalized; current day's
-// developing H/L updates each bar — that's the desired behavior for live levels.
-liq1Hi  = request.security(syminfo.tickerid, "D", high,                 lookahead=barmerge.lookahead_on)
-liq1Lo  = request.security(syminfo.tickerid, "D", low,                  lookahead=barmerge.lookahead_on)
-liq7Hi  = request.security(syminfo.tickerid, "D", ta.highest(high, 7),  lookahead=barmerge.lookahead_on)
-liq7Lo  = request.security(syminfo.tickerid, "D", ta.lowest(low,   7),  lookahead=barmerge.lookahead_on)
-liq30Hi = request.security(syminfo.tickerid, "D", ta.highest(high, 30), lookahead=barmerge.lookahead_on)
-liq30Lo = request.security(syminfo.tickerid, "D", ta.lowest(low,   30), lookahead=barmerge.lookahead_on)
+// Use [1] (previous bar) so values are FROZEN once a daily bar closes —
+// the line stays put through the rest of the current day. When swept, the
+// line is left alone (no auto-fade); you manually adjust as needed.
+//   1D  H/L  = yesterday's high / low
+//   7D  H/L  = highest high / lowest low of the last 7 completed daily bars
+//   30D H/L  = highest high / lowest low of the last 30 completed daily bars
+liq1Hi  = request.security(syminfo.tickerid, "D", high[1],                 lookahead=barmerge.lookahead_off)
+liq1Lo  = request.security(syminfo.tickerid, "D", low[1],                  lookahead=barmerge.lookahead_off)
+liq7Hi  = request.security(syminfo.tickerid, "D", ta.highest(high[1], 7),  lookahead=barmerge.lookahead_off)
+liq7Lo  = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   7),  lookahead=barmerge.lookahead_off)
+liq30Hi = request.security(syminfo.tickerid, "D", ta.highest(high[1], 30), lookahead=barmerge.lookahead_off)
+liq30Lo = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   30), lookahead=barmerge.lookahead_off)
 
 var line ln1Hi  = na
 var line ln1Lo  = na
@@ -1586,6 +1589,35 @@ if proxEnable and barstate.islast
                 near = zoneNear(array.get(fvgBearTop, i), array.get(fvgBearBot, i))
                 box.set_bgcolor(array.get(fvgBearBoxes, i), near ? fvgBearColor : fadeColor(fvgBearColor))
                 box.set_border_color(array.get(fvgBearBoxes, i), near ? fvgBearColor : fadeColor(fvgBearColor))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMAs  (trend filter + dynamic S/R)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpEMA = "EMAs"
+showEma1   = input.bool(true,  "Show EMA 1",      group=grpEMA)
+ema1Len    = input.int(50,     "EMA 1 length",    group=grpEMA, minval=2, maxval=400)
+ema1Col    = input.color(color.new(#42A5F5, 0), "EMA 1 color", group=grpEMA)
+showEma2   = input.bool(true,  "Show EMA 2",      group=grpEMA)
+ema2Len    = input.int(200,    "EMA 2 length",    group=grpEMA, minval=2, maxval=400)
+ema2Col    = input.color(color.new(#FFB300, 0), "EMA 2 color", group=grpEMA)
+emaWidth   = input.int(2,      "Line width",      group=grpEMA, minval=1, maxval=4)
+emaCrossLbl= input.bool(true,  "Mark EMA crosses on chart", group=grpEMA)
+
+ema1Val = ta.ema(close, ema1Len)
+ema2Val = ta.ema(close, ema2Len)
+
+plot(showEma1 ? ema1Val : na, "EMA 1", color=ema1Col, linewidth=emaWidth)
+plot(showEma2 ? ema2Val : na, "EMA 2", color=ema2Col, linewidth=emaWidth)
+
+emaBullCross = showEma1 and showEma2 and ta.crossover(ema1Val, ema2Val)
+emaBearCross = showEma1 and showEma2 and ta.crossunder(ema1Val, ema2Val)
+
+plotshape(emaCrossLbl and emaBullCross, title="EMA bull cross", location=location.belowbar, style=shape.circle, color=color.new(#00C853, 0), size=size.tiny, text="X")
+plotshape(emaCrossLbl and emaBearCross, title="EMA bear cross", location=location.abovebar, style=shape.circle, color=color.new(#F23645, 0), size=size.tiny, text="X")
+
+alertcondition(emaBullCross, "EMA bull cross", "Fast EMA crossed above slow EMA")
+alertcondition(emaBearCross, "EMA bear cross", "Fast EMA crossed below slow EMA")
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  COMPOSITE SIGNALS  (NEW)
