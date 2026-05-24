@@ -1248,6 +1248,153 @@ if barstate.islast and lblAllowLevels
         label.new(bar_index, prevML, "PML", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY LEVELS  (1D / 7D / 30D rolling highs & lows = major liq pools)
+//
+//  Six horizontal lines representing the major liquidity targets that
+//  algos and liquidation engines hunt:
+//    1D  H/L  = current developing day's running high / low
+//    7D  H/L  = highest high / lowest low of the last 7 daily bars
+//    30D H/L  = highest high / lowest low of the last 30 daily bars
+//
+//  Levels are computed on the Daily timeframe via request.security so they
+//  stay consistent regardless of which chart TF you're viewing.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpLIQL = "Liquidity Levels"
+showDayLiq   = input.bool(true,  "Show 1-day liquidity (H+L)",  group=grpLIQL)
+showWeekLiq  = input.bool(true,  "Show 7-day liquidity (H+L)",  group=grpLIQL)
+showMonthLiq = input.bool(true,  "Show 30-day liquidity (H+L)", group=grpLIQL)
+liqStyleIn   = input.string("Solid", "Line style", group=grpLIQL, options=["Solid","Dashed","Dotted"])
+liqWidth     = input.int(2,      "Line width",  group=grpLIQL, minval=1, maxval=4)
+liqExtend    = input.bool(true,  "Extend to right", group=grpLIQL)
+liqLabels    = input.bool(true,  "Show price labels", group=grpLIQL)
+liqShowMid   = input.bool(false, "Show midline of each range", group=grpLIQL,
+     tooltip="Adds a third line at the midpoint between H and L for each period.")
+dayHiCol     = input.color(color.new(#FFB300, 0), "1D High",  group=grpLIQL)
+dayLoCol     = input.color(color.new(#FFB300, 0), "1D Low",   group=grpLIQL)
+weekHiCol    = input.color(color.new(#1E88E5, 0), "7D High",  group=grpLIQL)
+weekLoCol    = input.color(color.new(#1E88E5, 0), "7D Low",   group=grpLIQL)
+monHiCol     = input.color(color.new(#8E24AA, 0), "30D High", group=grpLIQL)
+monLoCol     = input.color(color.new(#8E24AA, 0), "30D Low",  group=grpLIQL)
+liqMidCol    = input.color(color.new(color.gray, 50), "Midlines", group=grpLIQL)
+
+liqStyle = liqStyleIn == "Dashed" ? line.style_dashed : liqStyleIn == "Dotted" ? line.style_dotted : line.style_solid
+liqExt   = liqExtend ? extend.right : extend.none
+
+// Fetch on Daily TF so it works regardless of chart TF.
+// lookahead_on is fine here: historical daily H/L are finalized; current day's
+// developing H/L updates each bar — that's the desired behavior for live levels.
+liq1Hi  = request.security(syminfo.tickerid, "D", high,                 lookahead=barmerge.lookahead_on)
+liq1Lo  = request.security(syminfo.tickerid, "D", low,                  lookahead=barmerge.lookahead_on)
+liq7Hi  = request.security(syminfo.tickerid, "D", ta.highest(high, 7),  lookahead=barmerge.lookahead_on)
+liq7Lo  = request.security(syminfo.tickerid, "D", ta.lowest(low,   7),  lookahead=barmerge.lookahead_on)
+liq30Hi = request.security(syminfo.tickerid, "D", ta.highest(high, 30), lookahead=barmerge.lookahead_on)
+liq30Lo = request.security(syminfo.tickerid, "D", ta.lowest(low,   30), lookahead=barmerge.lookahead_on)
+
+var line ln1Hi  = na
+var line ln1Lo  = na
+var line ln1Mid = na
+var line ln7Hi  = na
+var line ln7Lo  = na
+var line ln7Mid = na
+var line ln30Hi = na
+var line ln30Lo = na
+var line ln30Mid= na
+var label lb1Hi  = na
+var label lb1Lo  = na
+var label lb7Hi  = na
+var label lb7Lo  = na
+var label lb30Hi = na
+var label lb30Lo = na
+
+if barstate.islast
+    leftBar = math.max(0, bar_index - 500)
+
+    // 1-Day
+    if not na(ln1Hi)
+        line.delete(ln1Hi)
+    if not na(ln1Lo)
+        line.delete(ln1Lo)
+    if not na(ln1Mid)
+        line.delete(ln1Mid)
+    if not na(lb1Hi)
+        label.delete(lb1Hi)
+    if not na(lb1Lo)
+        label.delete(lb1Lo)
+    if showDayLiq and not na(liq1Hi) and not na(liq1Lo)
+        ln1Hi := line.new(leftBar, liq1Hi, bar_index, liq1Hi, color=dayHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        ln1Lo := line.new(leftBar, liq1Lo, bar_index, liq1Lo, color=dayLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        if liqShowMid
+            mid = math.avg(liq1Hi, liq1Lo)
+            ln1Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+        if liqLabels
+            lb1Hi := label.new(bar_index, liq1Hi, "1D-H " + str.tostring(liq1Hi, format.mintick),
+                 style=label.style_label_left, color=color.new(dayHiCol, 20), textcolor=color.white, size=size.small)
+            lb1Lo := label.new(bar_index, liq1Lo, "1D-L " + str.tostring(liq1Lo, format.mintick),
+                 style=label.style_label_left, color=color.new(dayLoCol, 20), textcolor=color.white, size=size.small)
+
+    // 7-Day
+    if not na(ln7Hi)
+        line.delete(ln7Hi)
+    if not na(ln7Lo)
+        line.delete(ln7Lo)
+    if not na(ln7Mid)
+        line.delete(ln7Mid)
+    if not na(lb7Hi)
+        label.delete(lb7Hi)
+    if not na(lb7Lo)
+        label.delete(lb7Lo)
+    if showWeekLiq and not na(liq7Hi) and not na(liq7Lo)
+        ln7Hi := line.new(leftBar, liq7Hi, bar_index, liq7Hi, color=weekHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        ln7Lo := line.new(leftBar, liq7Lo, bar_index, liq7Lo, color=weekLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        if liqShowMid
+            mid = math.avg(liq7Hi, liq7Lo)
+            ln7Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+        if liqLabels
+            lb7Hi := label.new(bar_index, liq7Hi, "7D-H " + str.tostring(liq7Hi, format.mintick),
+                 style=label.style_label_left, color=color.new(weekHiCol, 20), textcolor=color.white, size=size.small)
+            lb7Lo := label.new(bar_index, liq7Lo, "7D-L " + str.tostring(liq7Lo, format.mintick),
+                 style=label.style_label_left, color=color.new(weekLoCol, 20), textcolor=color.white, size=size.small)
+
+    // 30-Day
+    if not na(ln30Hi)
+        line.delete(ln30Hi)
+    if not na(ln30Lo)
+        line.delete(ln30Lo)
+    if not na(ln30Mid)
+        line.delete(ln30Mid)
+    if not na(lb30Hi)
+        label.delete(lb30Hi)
+    if not na(lb30Lo)
+        label.delete(lb30Lo)
+    if showMonthLiq and not na(liq30Hi) and not na(liq30Lo)
+        ln30Hi := line.new(leftBar, liq30Hi, bar_index, liq30Hi, color=monHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        ln30Lo := line.new(leftBar, liq30Lo, bar_index, liq30Lo, color=monLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+        if liqShowMid
+            mid = math.avg(liq30Hi, liq30Lo)
+            ln30Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+        if liqLabels
+            lb30Hi := label.new(bar_index, liq30Hi, "30D-H " + str.tostring(liq30Hi, format.mintick),
+                 style=label.style_label_left, color=color.new(monHiCol, 20), textcolor=color.white, size=size.small)
+            lb30Lo := label.new(bar_index, liq30Lo, "30D-L " + str.tostring(liq30Lo, format.mintick),
+                 style=label.style_label_left, color=color.new(monLoCol, 20), textcolor=color.white, size=size.small)
+
+// Liquidity sweep alerts — when price wicks beyond a level and closes back inside
+liqSweep1H  = showDayLiq   and not na(liq1Hi)  and high > liq1Hi  and close < liq1Hi
+liqSweep1L  = showDayLiq   and not na(liq1Lo)  and low  < liq1Lo  and close > liq1Lo
+liqSweep7H  = showWeekLiq  and not na(liq7Hi)  and high > liq7Hi  and close < liq7Hi
+liqSweep7L  = showWeekLiq  and not na(liq7Lo)  and low  < liq7Lo  and close > liq7Lo
+liqSweep30H = showMonthLiq and not na(liq30Hi) and high > liq30Hi and close < liq30Hi
+liqSweep30L = showMonthLiq and not na(liq30Lo) and low  < liq30Lo and close > liq30Lo
+
+alertcondition(liqSweep1H,  "1D high swept",  "1-day liquidity high swept")
+alertcondition(liqSweep1L,  "1D low swept",   "1-day liquidity low swept")
+alertcondition(liqSweep7H,  "7D high swept",  "7-day liquidity high swept")
+alertcondition(liqSweep7L,  "7D low swept",   "7-day liquidity low swept")
+alertcondition(liqSweep30H, "30D high swept", "30-day liquidity high swept")
+alertcondition(liqSweep30L, "30D low swept",  "30-day liquidity low swept")
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  HTF ORDER BLOCKS  (FIX B6: pivots offset by [1] to stop repaint)
 // ══════════════════════════════════════════════════════════════════════════════
 
