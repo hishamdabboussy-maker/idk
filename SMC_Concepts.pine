@@ -222,6 +222,7 @@ addLiq(arr, p, b, baseColor, isHigh) =>
             line.delete(old.ln)
             if not na(old.lbl)
                 label.delete(old.lbl)
+    foundIdx
 
 if showLiq and not na(phE)
     addLiq(buyLiq,  phE, bar_index - extLB, buySLColor,  true)
@@ -245,6 +246,7 @@ sweepLevels(arr, isBuy) =>
                              textcolor=color.white, size=size.small)
                     line.set_color(lv.ln, color.new(color.gray, 50))
                     line.set_style(lv.ln, line.style_dotted)
+    0
 
 if showLiq
     sweepLevels(buyLiq,  true)
@@ -356,6 +358,7 @@ createOB(isBull) =>
         while array.size(obs) > obKeepN * 2
             old = array.shift(obs)
             box.delete(old.bx)
+    obIdx
 
 if showOB and (isBullBOS or isBullCHOCH)
     createOB(true)
