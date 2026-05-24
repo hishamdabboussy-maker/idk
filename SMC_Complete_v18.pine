@@ -151,7 +151,7 @@ drawStructLine(brokenLevel, brokenBar, isCHoCH, isBull, isInternal) =>
     if showStruct
         line.new(brokenBar, brokenLevel, bar_index, brokenLevel, color=col, style=style, width=width)
         if masterLabels
-            label.new(math.avg(brokenBar, bar_index), brokenLevel, txt,
+            label.new(int(math.avg(brokenBar, bar_index)), brokenLevel, txt,
                  style=isBull ? label.style_label_down : label.style_label_up,
                  color=color.new(col, 70), textcolor=color.white, size=size.tiny)
 
