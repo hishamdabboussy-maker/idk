@@ -34,6 +34,9 @@ extendBoxes  = input.bool(true,  "Extend zones to right",      group=grpDISP)
 proxEnable   = input.bool(true,  "Hide far zones (proximity)", group=grpDISP)
 proxPct      = input.float(2.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1)
 masterLabels = input.bool(true,  "Show zone labels",           group=grpDISP)
+labelDensity = input.string("Important", "Label density", group=grpDISP,
+     options=["All","Important","Minimal"],
+     tooltip="All = every zone gets a label.\nImportant = only OB, BB, CHoCH, sweep markers (skips FVG, IFVG, VI, RB, MB, swing points).\nMinimal = only CHoCH + sweep markers.")
 
 extRight    = extendBoxes ? extend.right : extend.none
 candleRange = high - low
@@ -42,6 +45,22 @@ bodyLow     = math.min(open, close)
 upperWick   = high  - bodyHigh
 lowerWick   = bodyLow - low
 atr14       = ta.atr(14)
+
+// Label density gates — which label types are allowed at each density level
+lblAllowOB      = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowBB      = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowBOS     = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowCHoCH   = masterLabels  // CHoCH always shown (all levels)
+lblAllowSweep   = masterLabels  // Sweep markers always shown
+lblAllowFVG     = masterLabels and labelDensity == "All"
+lblAllowIFVG    = masterLabels and labelDensity == "All"
+lblAllowVI      = masterLabels and labelDensity == "All"
+lblAllowRB      = masterLabels and labelDensity == "All"
+lblAllowMB      = masterLabels and labelDensity == "All"
+lblAllowSwing   = masterLabels and labelDensity == "All"
+lblAllowHTF     = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowPD      = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowLevels  = masterLabels and (labelDensity == "All" or labelDensity == "Important")
 
 zoneNear(zH, zL) =>
     if not proxEnable
@@ -98,8 +117,9 @@ if not na(extPL)
 
 // Internal trend tracker for CHoCH detection
 var int intTrend = 0     // +1 up, -1 down
-intBullBOS_raw  = not na(intLastPH) and close > intLastPH and close[1] <= intLastPH
-intBearBOS_raw  = not na(intLastPL) and close < intLastPL and close[1] >= intLastPL
+// BODY-break filter: the candle body (not wick) must cross the level for it to be significant
+intBullBOS_raw  = not na(intLastPH) and bodyLow > intLastPH and close[1] <= intLastPH
+intBearBOS_raw  = not na(intLastPL) and bodyHigh < intLastPL and close[1] >= intLastPL
 
 intBullBOS  = false
 intBullCHoCH = false
@@ -121,8 +141,9 @@ if intBearBOS_raw
 
 // External trend tracker
 var int extTrend = 0
-extBullBOS_raw  = not na(extLastPH) and close > extLastPH and close[1] <= extLastPH
-extBearBOS_raw  = not na(extLastPL) and close < extLastPL and close[1] >= extLastPL
+// BODY-break filter for external structure too
+extBullBOS_raw  = not na(extLastPH) and bodyLow > extLastPH and close[1] <= extLastPH
+extBearBOS_raw  = not na(extLastPL) and bodyHigh < extLastPL and close[1] >= extLastPL
 
 extBullBOS  = false
 extBullCHoCH = false
@@ -143,6 +164,14 @@ if extBearBOS_raw
     extTrend := -1
 
 // Draw structure breaks
+// ── LABEL DEDUP: track last direction + bar to avoid spam ────────────────────
+var int lastIntStructDir  = 0   // +1 bull, -1 bear (dedup same-direction BOS)
+var int lastExtStructDir  = 0
+var int lastIntStructBar  = -9999
+var int lastExtStructBar  = -9999
+minStructGap = input.int(10, "Min bars between structure labels", group=grpMS, minval=0, maxval=50,
+     tooltip="Suppresses repeat BOS/CHoCH labels within this many bars of the previous one. Keeps the chart clean on choppy price action.")
+
 drawStructLine(brokenLevel, brokenBar, isCHoCH, isBull, isInternal) =>
     col   = isBull ? bullStructColor : bearStructColor
     style = isInternal ? line.style_dotted : line.style_solid
@@ -150,35 +179,83 @@ drawStructLine(brokenLevel, brokenBar, isCHoCH, isBull, isInternal) =>
     txt   = (isCHoCH ? "CHoCH" : "BOS") + (isInternal ? "" : "")
     if showStruct
         line.new(brokenBar, brokenLevel, bar_index, brokenLevel, color=col, style=style, width=width)
-        if masterLabels
-            label.new(int(math.avg(brokenBar, bar_index)), brokenLevel, txt,
-                 style=isBull ? label.style_label_down : label.style_label_up,
-                 color=color.new(col, 70), textcolor=color.white, size=size.tiny)
+
+// Helper: should we draw a structure label? (dedup + spacing)
+canDrawStructLabel(isBull, isInternal) =>
+    dir = isBull ? 1 : -1
+    if isInternal
+        sameDir = (lastIntStructDir == dir) and not false  // BOS in same dir = skip
+        tooClose = (bar_index - lastIntStructBar) < minStructGap
+        not sameDir and not tooClose
+    else
+        sameDir = (lastExtStructDir == dir) and not false
+        tooClose = (bar_index - lastExtStructBar) < minStructGap
+        not sameDir and not tooClose
 
 if showInternal and intBullBOS
     drawStructLine(intLastPH, intLastPHBar, false, true, true)
+    if lblAllowBOS and canDrawStructLabel(true, true)
+        label.new(int(math.avg(intLastPHBar, bar_index)), intLastPH, "BOS",
+             style=label.style_label_down, color=color.new(bullStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastIntStructDir := 1
+    lastIntStructBar := bar_index
     intLastPH := na
 if showInternal and intBullCHoCH
     drawStructLine(intLastPH, intLastPHBar, true, true, true)
+    if lblAllowCHoCH
+        label.new(int(math.avg(intLastPHBar, bar_index)), intLastPH, "CHoCH",
+             style=label.style_label_down, color=color.new(bullStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastIntStructDir := 1
+    lastIntStructBar := bar_index
     intLastPH := na
 if showInternal and intBearBOS
     drawStructLine(intLastPL, intLastPLBar, false, false, true)
+    if lblAllowBOS and canDrawStructLabel(false, true)
+        label.new(int(math.avg(intLastPLBar, bar_index)), intLastPL, "BOS",
+             style=label.style_label_up, color=color.new(bearStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastIntStructDir := -1
+    lastIntStructBar := bar_index
     intLastPL := na
 if showInternal and intBearCHoCH
     drawStructLine(intLastPL, intLastPLBar, true, false, true)
+    if lblAllowCHoCH
+        label.new(int(math.avg(intLastPLBar, bar_index)), intLastPL, "CHoCH",
+             style=label.style_label_up, color=color.new(bearStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastIntStructDir := -1
+    lastIntStructBar := bar_index
     intLastPL := na
 
 if showExternal and extBullBOS
     drawStructLine(extLastPH, extLastPHBar, false, true, false)
+    if lblAllowBOS and canDrawStructLabel(true, false)
+        label.new(int(math.avg(extLastPHBar, bar_index)), extLastPH, "BOS",
+             style=label.style_label_down, color=color.new(bullStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastExtStructDir := 1
+    lastExtStructBar := bar_index
     extLastPH := na
 if showExternal and extBullCHoCH
     drawStructLine(extLastPH, extLastPHBar, true, true, false)
+    if lblAllowCHoCH
+        label.new(int(math.avg(extLastPHBar, bar_index)), extLastPH, "CHoCH",
+             style=label.style_label_down, color=color.new(bullStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastExtStructDir := 1
+    lastExtStructBar := bar_index
     extLastPH := na
 if showExternal and extBearBOS
     drawStructLine(extLastPL, extLastPLBar, false, false, false)
+    if lblAllowBOS and canDrawStructLabel(false, false)
+        label.new(int(math.avg(extLastPLBar, bar_index)), extLastPL, "BOS",
+             style=label.style_label_up, color=color.new(bearStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastExtStructDir := -1
+    lastExtStructBar := bar_index
     extLastPL := na
 if showExternal and extBearCHoCH
     drawStructLine(extLastPL, extLastPLBar, true, false, false)
+    if lblAllowCHoCH
+        label.new(int(math.avg(extLastPLBar, bar_index)), extLastPL, "CHoCH",
+             style=label.style_label_up, color=color.new(bearStructColor, 70), textcolor=color.white, size=size.tiny)
+    lastExtStructDir := -1
+    lastExtStructBar := bar_index
     extLastPL := na
 
 // Strong / weak swing labels (use external swings)
@@ -188,7 +265,7 @@ var bool  prevSwingLowBroken  = false  // means current swing high above is "str
 var bool  prevSwingHighBroken = false  // means current swing low below is "strong"
 
 if not na(extPH)
-    if showSwingPoints and showStruct
+    if showSwingPoints and showStruct and lblAllowSwing
         if strongWeakLbl
             tag = prevSwingLowBroken ? "SH" : "wH"
             label.new(bar_index - externalLen, extPH, tag,
@@ -203,7 +280,7 @@ if not na(extPH)
     prevExtPH            := extPH
     prevSwingHighBroken  := false  // a new swing high resets the "high broken" tracker
 if not na(extPL)
-    if showSwingPoints and showStruct
+    if showSwingPoints and showStruct and lblAllowSwing
         if strongWeakLbl
             tag = prevSwingHighBroken ? "SL" : "wL"
             label.new(bar_index - externalLen, extPL, tag,
@@ -281,7 +358,7 @@ if showOB and bullBOS
     array.push(obBullMitig, false)
     array.push(obBullHi, oH)
     array.push(obBullLo, oL)
-    if masterLabels
+    if lblAllowOB
         label.new(oB, oH, "OB", style=label.style_label_down, color=obBullColor, textcolor=color.white, size=size.tiny)
 
 if showOB and bearBOS
@@ -303,7 +380,7 @@ if showOB and bearBOS
     array.push(obBearMitig, false)
     array.push(obBearHi, oH)
     array.push(obBearLo, oL)
-    if masterLabels
+    if lblAllowOB
         label.new(oB, oL, "OB", style=label.style_label_up, color=obBearColor, textcolor=color.white, size=size.tiny)
 
 // OB mitigation
@@ -373,7 +450,7 @@ if showBB and showOB
                     array.push(bbBearLo, oL)
                     array.push(bbBearMitig, false)
                     array.push(bbBearSpawnedH, oH)
-                    if masterLabels
+                    if lblAllowBB
                         label.new(bar_index, oH, "BB", style=label.style_label_down, color=bbBearColor, textcolor=color.white, size=size.tiny)
 
     if array.size(obBearBoxes) > 0
@@ -393,7 +470,7 @@ if showBB and showOB
                     array.push(bbBullLo, oL)
                     array.push(bbBullMitig, false)
                     array.push(bbBullSpawnedH, oH)
-                    if masterLabels
+                    if lblAllowBB
                         label.new(bar_index, oL, "BB", style=label.style_label_up, color=bbBullColor, textcolor=color.white, size=size.tiny)
 
 if showBB and array.size(bbBullBoxes) > 0
@@ -450,7 +527,7 @@ if showMB and oppBullMB
     array.push(mbBullMitig, false)
     array.push(mbBullHi, high[2])
     array.push(mbBullLo, low[2])
-    if masterLabels
+    if lblAllowMB
         label.new(bar_index - 2, high[2], "MB", style=label.style_label_down, color=mbBullColor, textcolor=color.white, size=size.tiny)
 
 if showMB and oppBearMB
@@ -464,7 +541,7 @@ if showMB and oppBearMB
     array.push(mbBearMitig, false)
     array.push(mbBearHi, high[2])
     array.push(mbBearLo, low[2])
-    if masterLabels
+    if lblAllowMB
         label.new(bar_index - 2, low[2], "MB", style=label.style_label_up, color=mbBearColor, textcolor=color.white, size=size.tiny)
 
 if showMB and array.size(mbBullBoxes) > 0
@@ -517,7 +594,7 @@ if showRB and isBullRB
     array.push(rbBullMitig, false)
     array.push(rbBullHi, high)
     array.push(rbBullLo, low)
-    if masterLabels
+    if lblAllowRB
         label.new(bar_index, low, "RB", style=label.style_label_up, color=rbBullColor, textcolor=color.white, size=size.tiny)
 
 if showRB and isBearRB
@@ -531,7 +608,7 @@ if showRB and isBearRB
     array.push(rbBearMitig, false)
     array.push(rbBearHi, high)
     array.push(rbBearLo, low)
-    if masterLabels
+    if lblAllowRB
         label.new(bar_index, high, "RB", style=label.style_label_down, color=rbBearColor, textcolor=color.white, size=size.tiny)
 
 if showRB and array.size(rbBullBoxes) > 0
@@ -555,16 +632,20 @@ if showRB and array.size(rbBearBoxes) > 0
 
 grpFVG = "🟩 Fair Value Gaps"
 showFVG     = input.bool(true,  "Show FVGs",              group=grpFVG)
-fvgMinSize  = input.float(0.05, "Min gap % (0=any)",      group=grpFVG, minval=0.0, maxval=2.0, step=0.01)
-fvgMaxBoxes = input.int(5,      "Max FVGs per side",      group=grpFVG, minval=1, maxval=15)
+fvgMinSize  = input.float(0.1,  "Min gap % (0=any)",      group=grpFVG, minval=0.0, maxval=2.0, step=0.01,
+     tooltip="Gap must be at least this % of price AND meet the ATR filter below. Raised default from 0.05 to 0.1 to cut noise.")
+fvgMinATR   = input.float(0.3,  "Min gap size (× ATR14)", group=grpFVG, minval=0.0, maxval=3.0, step=0.1,
+     tooltip="Gap must also be at least this multiple of ATR(14). Set 0 to disable. Default 0.3 filters out tiny imbalances.")
+fvgMaxBoxes = input.int(3,      "Max FVGs per side",      group=grpFVG, minval=1, maxval=15)
 showFVGMid  = input.bool(true,  "Show midline (CE)",      group=grpFVG,
      tooltip="Consequent encroachment line — the FVG midpoint is where ICT-style entries are usually triggered.")
 fvgBullColor= input.color(color.new(#00C853, 80), "Bull FVG", group=grpFVG)
 fvgBearColor= input.color(color.new(#FF1744, 80), "Bear FVG", group=grpFVG)
 
 minGapVal = close * fvgMinSize / 100.0
-isBullFVG = (low - high[2]) > minGapVal
-isBearFVG = (low[2] - high) > minGapVal
+minGapATR = fvgMinATR > 0 and not na(atr14) ? fvgMinATR * atr14 : 0.0
+isBullFVG = (low - high[2]) > math.max(minGapVal, minGapATR)
+isBearFVG = (low[2] - high) > math.max(minGapVal, minGapATR)
 
 var fvgBullBoxes = array.new_box()
 var fvgBullLines = array.new_line()
@@ -596,7 +677,7 @@ if showFVG and isBullFVG
     if showFVGMid
         l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 50), style=line.style_dashed, extend=extRight)
         array.push(fvgBullLines, l)
-    if masterLabels
+    if lblAllowFVG
         label.new(bar_index, gB, "FVG", style=label.style_label_up, color=fvgBullColor, textcolor=color.white, size=size.tiny)
 
 if showFVG and isBearFVG
@@ -617,7 +698,7 @@ if showFVG and isBearFVG
     if showFVGMid
         l = line.new(bar_index[2], math.avg(gT, gB), bar_index, math.avg(gT, gB), color=color.new(color.white, 50), style=line.style_dashed, extend=extRight)
         array.push(fvgBearLines, l)
-    if masterLabels
+    if lblAllowFVG
         label.new(bar_index, gT, "FVG", style=label.style_label_down, color=fvgBearColor, textcolor=color.white, size=size.tiny)
 
 if showFVG and array.size(fvgBullBoxes) > 0
@@ -651,7 +732,7 @@ if showFVG and array.size(fvgBearBoxes) > 0
 grpIFVG = "🟧 Inverse FVGs"
 showIFVG     = input.bool(true,  "Show IFVGs",            group=grpIFVG)
 ifvgStrict   = input.bool(true,  "Require close inside",  group=grpIFVG)
-ifvgMaxBoxes = input.int(3,      "Max IFVGs per side",    group=grpIFVG, minval=1, maxval=10)
+ifvgMaxBoxes = input.int(2,      "Max IFVGs per side",    group=grpIFVG, minval=1, maxval=10)
 ifvgBullColor= input.color(color.new(#FF6D00, 80), "Bull IFVG", group=grpIFVG)
 ifvgBearColor= input.color(color.new(#AA00FF, 80), "Bear IFVG", group=grpIFVG)
 
@@ -702,7 +783,7 @@ if showIFVG
             array.push(ifvgBullBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBullColor, border_color=ifvgBullColor, extend=extRight))
             array.push(ifvgBullTop, t)
             array.push(ifvgBullBot, b2)
-            if masterLabels
+            if lblAllowIFVG
                 label.new(bar_index, b2, "IFVG", style=label.style_label_up, color=ifvgBullColor, textcolor=color.white, size=size.tiny)
             array.remove(pendBullTop, idx)
             array.remove(pendBullBot, idx)
@@ -724,7 +805,7 @@ if showIFVG
             array.push(ifvgBearBoxes, box.new(sB, t, bar_index, b2, bgcolor=ifvgBearColor, border_color=ifvgBearColor, extend=extRight))
             array.push(ifvgBearTop, t)
             array.push(ifvgBearBot, b2)
-            if masterLabels
+            if lblAllowIFVG
                 label.new(bar_index, t, "IFVG", style=label.style_label_down, color=ifvgBearColor, textcolor=color.white, size=size.tiny)
             array.remove(pendBearTop, idx2)
             array.remove(pendBearBot, idx2)
@@ -888,7 +969,7 @@ if showLIQ and not na(liqPH)
         array.push(liqHighLines, l)
         array.push(liqHighLevels, liqPH)
         array.push(liqHighSwept, false)
-        if masterLabels
+        if lblAllowPD
             tag = showBSLSSLLbl ? "BSL" : "EQH"
             label.new(bar_index - liqLookback, liqPH, tag,
                  style=label.style_label_down, color=liqEQHColor,
@@ -927,7 +1008,7 @@ if showLIQ and not na(liqPL)
         array.push(liqLowLines, l)
         array.push(liqLowLevels, liqPL)
         array.push(liqLowSwept, false)
-        if masterLabels
+        if lblAllowPD
             tag = showBSLSSLLbl ? "SSL" : "EQL"
             label.new(bar_index - liqLookback, liqPL, tag,
                  style=label.style_label_up, color=liqEQLColor,
@@ -1020,7 +1101,7 @@ if showPD and barstate.islast
     pdBoxPrem := box.new(bar_index - pdLookback, rngHi, bar_index, rngMid, bgcolor=pdPremColor, border_color=pdPremColor, extend=extend.right)
     pdBoxDisc := box.new(bar_index - pdLookback, rngMid, bar_index, rngLo, bgcolor=pdDiscColor, border_color=pdDiscColor, extend=extend.right)
     pdEqLine  := line.new(bar_index - pdLookback, rngMid, bar_index, rngMid, color=pdEqColor, style=line.style_dashed, extend=extend.right)
-    if masterLabels
+    if lblAllowHTF
         label.new(bar_index, rngHi, "PREMIUM",  style=label.style_label_left, color=color.new(pdPremColor, 30), textcolor=color.white, size=size.tiny)
         label.new(bar_index, rngLo, "DISCOUNT", style=label.style_label_left, color=color.new(pdDiscColor, 30), textcolor=color.white, size=size.tiny)
         label.new(bar_index, rngMid, "EQ",       style=label.style_label_left, color=color.new(color.gray, 60), textcolor=color.white, size=size.tiny)
@@ -1037,14 +1118,14 @@ if showPD and showOTE and barstate.islast
         ote62 = rngHi - leg * 0.62
         ote79 = rngHi - leg * 0.79
         pdOTEBull := box.new(bar_index - pdLookback, ote62, bar_index, ote79, bgcolor=pdOTEColor, border_color=pdOTEColor, extend=extend.right)
-        if masterLabels
+        if lblAllowHTF
             label.new(bar_index, math.avg(ote62, ote79), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
     else if extTrend == -1 and not na(extLastPH) and not na(prevExtPL)
         leg = rngHi - rngLo
         ote62 = rngLo + leg * 0.62
         ote79 = rngLo + leg * 0.79
         pdOTEBear := box.new(bar_index - pdLookback, ote79, bar_index, ote62, bgcolor=pdOTEColor, border_color=pdOTEColor, extend=extend.right)
-        if masterLabels
+        if lblAllowHTF
             label.new(bar_index, math.avg(ote62, ote79), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1106,7 +1187,7 @@ plot(showPrevHL ? prevMH : na, "PMH", color=prevMColor, style=plot.style_linebr,
 plot(showPrevHL ? prevML : na, "PML", color=prevMColor, style=plot.style_linebr, linewidth=1)
 
 // Right-edge labels for periodic levels (only on last bar)
-if barstate.islast and masterLabels
+if barstate.islast and lblAllowLevels
     if showOpens
         label.new(bar_index, dOpen, "dO",  style=label.style_label_left, color=color.new(dOpenColor, 30), textcolor=color.black, size=size.tiny)
         label.new(bar_index, wOpen, "wO",  style=label.style_label_left, color=color.new(wOpenColor, 30), textcolor=color.black, size=size.tiny)
@@ -1178,7 +1259,7 @@ if showHTFOB and chartBelowHTF and htfBullBOS
     array.push(htfOBBullHi, oH)
     array.push(htfOBBullLo, oL)
     array.push(htfOBBullMitig, false)
-    if masterLabels
+    if lblAllowSwing
         label.new(bar_index, oH, htfOBTF + "OB", style=label.style_label_down, color=color.new(htfOBBullCol, 20), textcolor=color.white, size=size.tiny)
 
 if showHTFOB and chartBelowHTF and htfBearBOS
@@ -1199,7 +1280,7 @@ if showHTFOB and chartBelowHTF and htfBearBOS
     array.push(htfOBBearHi, oH)
     array.push(htfOBBearLo, oL)
     array.push(htfOBBearMitig, false)
-    if masterLabels
+    if lblAllowSwing
         label.new(bar_index, oL, htfOBTF + "OB", style=label.style_label_up, color=color.new(htfOBBearCol, 20), textcolor=color.white, size=size.tiny)
 
 if showHTFOB and chartBelowHTF
