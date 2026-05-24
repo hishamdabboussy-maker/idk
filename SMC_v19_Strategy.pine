@@ -191,7 +191,7 @@ if array.size(obBearHi) > 0
 
 // Tap detection
 tappingBullOB = false
-float bullOBLo = na
+bullOBLo = float(na)
 if array.size(obBullHi) > 0
     for i = array.size(obBullHi) - 1 to 0
         if not array.get(obBullMitig, i)
@@ -203,7 +203,7 @@ if array.size(obBullHi) > 0
                 break
 
 tappingBearOB = false
-float bearOBHi = na
+bearOBHi = float(na)
 if array.size(obBearHi) > 0
     for i = array.size(obBearHi) - 1 to 0
         if not array.get(obBearMitig, i)
@@ -370,14 +370,14 @@ recentEQLSweep = (bar_index - lastEQLSweepBar) <= sigLookback
 recentEQHSweep = (bar_index - lastEQHSweepBar) <= sigLookback
 
 // Find nearest opposing liquidity for TP2
-float nearestEQHabove = na
+nearestEQHabove = float(na)
 if array.size(liqHi) > 0
     for i = 0 to array.size(liqHi) - 1
         if not array.get(liqHiSwept, i)
             lvl = array.get(liqHi, i)
             if lvl > close and (na(nearestEQHabove) or lvl < nearestEQHabove)
                 nearestEQHabove := lvl
-float nearestEQLbelow = na
+nearestEQLbelow = float(na)
 if array.size(liqLo) > 0
     for i = 0 to array.size(liqLo) - 1
         if not array.get(liqLoSwept, i)
