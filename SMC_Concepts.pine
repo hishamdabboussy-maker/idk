@@ -1,0 +1,434 @@
+//@version=5
+// ════════════════════════════════════════════════════════════════════════════
+//  SMC Concepts — a clean Smart Money Concepts indicator
+//  Covers, in order:
+//    1. Market Structure (HH / HL / LH / LL)
+//    2. Break of Structure (BOS) — trend continuation
+//    3. Change of Character (CHoCH) — first counter-trend break
+//    4. Internal vs External Structure
+//    5. Liquidity — BSL / SSL, Equal Highs / Equal Lows, Sweeps
+//    6. Fair Value Gaps (FVG) — Imbalances / Voids / Rebalancing
+//    7. Order Blocks — last opposing candle before displacement
+//    8. Breaker Blocks — order block that flipped polarity after invalidation
+//    9. Premium / Discount Zones — dealing range with 50% equilibrium
+// ════════════════════════════════════════════════════════════════════════════
+indicator("SMC Concepts", "SMC", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ─────────────────────────────── INPUTS ─────────────────────────────────────
+
+// 1–4. Market Structure (External + Internal, BOS, CHoCH)
+grpStr        = "1. Market Structure"
+extLB         = input.int(20, "External swing lookback", minval=3, group=grpStr,
+     tooltip="Larger pivots that define the broader trend (HH / HL / LH / LL).")
+intLB         = input.int(5,  "Internal swing lookback", minval=1, group=grpStr,
+     tooltip="Smaller pivots inside external legs for refined intraday entries.")
+showExtSwings = input.bool(true,  "Show external HH/HL/LH/LL", group=grpStr)
+showIntSwings = input.bool(true,  "Show internal swings",       group=grpStr)
+showBOS       = input.bool(true,  "Show BOS (continuation)",    group=grpStr)
+showCHOCH     = input.bool(true,  "Show CHoCH (reversal)",      group=grpStr)
+extColor      = input.color(color.white,  "External color",     group=grpStr)
+intColor      = input.color(color.gray,   "Internal color",     group=grpStr)
+bosColor      = input.color(color.lime,   "BOS color",          group=grpStr)
+chochColor    = input.color(color.orange, "CHoCH color",        group=grpStr)
+
+// 5. Liquidity
+grpLiq        = "2. Liquidity (BSL / SSL, EQH / EQL, Sweeps)"
+showLiq       = input.bool(true,  "Show liquidity levels",      group=grpLiq)
+showEQ        = input.bool(true,  "Highlight Equal Highs/Lows", group=grpLiq)
+eqTolPct      = input.float(0.10, "Equal-level tolerance (% of price)",
+     minval=0.0, step=0.05, group=grpLiq)
+showSweeps    = input.bool(true,  "Mark liquidity sweeps",      group=grpLiq)
+liqMaxN       = input.int(10, "Max liquidity lines per side", minval=1, maxval=30, group=grpLiq)
+buySLColor    = input.color(color.new(#FF5252, 0), "Buy-side liquidity (above highs)",  group=grpLiq)
+sellSLColor   = input.color(color.new(#69F0AE, 0), "Sell-side liquidity (below lows)",  group=grpLiq)
+
+// 6. Fair Value Gaps / Imbalances / Voids / Rebalancing
+grpFVG        = "3. Fair Value Gaps (Imbalances / Voids)"
+showFVG       = input.bool(true,  "Show FVGs",                    group=grpFVG)
+fvgMinPct     = input.float(0.0,  "Min gap size (% of price)",    minval=0.0, step=0.05, group=grpFVG)
+fvgRebal      = input.string("Midpoint", "Rebalance trigger",
+     options=["Midpoint","Full Fill"], group=grpFVG,
+     tooltip="When price returns to this point, the FVG is considered rebalanced.")
+showMidLine   = input.bool(true,  "Show FVG midline (CE)",        group=grpFVG)
+fvgKeepN      = input.int(10, "Max FVGs on chart", minval=1, maxval=30, group=grpFVG)
+bullFVGColor  = input.color(color.new(#26A69A, 80), "Bullish FVG",     group=grpFVG)
+bearFVGColor  = input.color(color.new(#EF5350, 80), "Bearish FVG",     group=grpFVG)
+filledFVGColor= input.color(color.new(color.gray, 85), "Rebalanced FVG", group=grpFVG)
+
+// 7-8. Order Blocks / Breaker Blocks
+grpOB         = "4. Order Blocks / Breakers"
+showOB        = input.bool(true,  "Show Order Blocks",            group=grpOB)
+showBreakers  = input.bool(true,  "Show Breaker Blocks",          group=grpOB)
+obKeepN       = input.int(5, "Max OBs per side", minval=1, maxval=15, group=grpOB)
+bullOBColor   = input.color(color.new(#2962FF, 80), "Bullish OB",      group=grpOB)
+bearOBColor   = input.color(color.new(#F23645, 80), "Bearish OB",      group=grpOB)
+bullBreakerColor = input.color(color.new(#FF6D00, 80), "Bullish Breaker (was bear OB)", group=grpOB)
+bearBreakerColor = input.color(color.new(#AA00FF, 80), "Bearish Breaker (was bull OB)", group=grpOB)
+
+// 9. Premium / Discount
+grpPD         = "5. Premium / Discount Zones"
+showPD        = input.bool(true,  "Show Premium / Discount",      group=grpPD)
+pdLB          = input.int(50, "Dealing range lookback", minval=10, group=grpPD)
+premColor     = input.color(color.new(#F23645, 88), "Premium",    group=grpPD)
+discColor     = input.color(color.new(#26A69A, 88), "Discount",   group=grpPD)
+eqLineColor   = input.color(color.new(color.white, 30), "Equilibrium (50%)", group=grpPD)
+
+// ─────────────────────────────── HELPERS ────────────────────────────────────
+priceTol(p) => p * eqTolPct / 100.0
+
+// ════════════════════════════════════════════════════════════════════════════
+//  1–4. MARKET STRUCTURE  (External + Internal, BOS, CHoCH)
+// ════════════════════════════════════════════════════════════════════════════
+
+// External pivots — define the broader trend
+phE = ta.pivothigh(high, extLB, extLB)
+plE = ta.pivotlow(low,   extLB, extLB)
+// Internal pivots — refine entries inside external legs
+phI = ta.pivothigh(high, intLB, intLB)
+plI = ta.pivotlow(low,   intLB, intLB)
+
+var float lastExtPH    = na
+var int   lastExtPHbar = na
+var float lastExtPL    = na
+var int   lastExtPLbar = na
+
+// Trend direction state for CHoCH detection: +1 bull, -1 bear, 0 unknown
+var int trendDir = 0
+
+// ── External HH / HL / LH / LL labels ───────────────────────────────────────
+if not na(phE)
+    pivotPrice = phE
+    pivotBar   = bar_index - extLB
+    txt = na(lastExtPH) ? "H" : (pivotPrice > lastExtPH ? "HH" : "LH")
+    if showExtSwings
+        label.new(pivotBar, pivotPrice, txt, style=label.style_label_down,
+             color=color.new(extColor, 70), textcolor=extColor, size=size.small)
+    lastExtPH    := pivotPrice
+    lastExtPHbar := pivotBar
+
+if not na(plE)
+    pivotPrice = plE
+    pivotBar   = bar_index - extLB
+    txt = na(lastExtPL) ? "L" : (pivotPrice > lastExtPL ? "HL" : "LL")
+    if showExtSwings
+        label.new(pivotBar, pivotPrice, txt, style=label.style_label_up,
+             color=color.new(extColor, 70), textcolor=extColor, size=size.small)
+    lastExtPL    := pivotPrice
+    lastExtPLbar := pivotBar
+
+// ── Internal swings — small dots only (no clutter) ──────────────────────────
+if showIntSwings and not na(phI)
+    label.new(bar_index - intLB, phI, "•", style=label.style_label_down,
+         color=color.new(intColor, 80), textcolor=intColor, size=size.tiny)
+if showIntSwings and not na(plI)
+    label.new(bar_index - intLB, plI, "•", style=label.style_label_up,
+         color=color.new(intColor, 80), textcolor=intColor, size=size.tiny)
+
+// ── BOS / CHoCH detection on the external swings ────────────────────────────
+// We only fire once per swing reference; resetting the ref after a break.
+var float bosPHRef = na
+var float bosPLRef = na
+if not na(lastExtPH) and (na(bosPHRef) or lastExtPH != bosPHRef)
+    bosPHRef := lastExtPH
+if not na(lastExtPL) and (na(bosPLRef) or lastExtPL != bosPLRef)
+    bosPLRef := lastExtPL
+
+bullBreak = not na(bosPHRef) and close > bosPHRef and close[1] <= bosPHRef
+bearBreak = not na(bosPLRef) and close < bosPLRef and close[1] >= bosPLRef
+
+isBullBOS   = bullBreak and trendDir ==  1
+isBullCHOCH = bullBreak and trendDir != 1
+isBearBOS   = bearBreak and trendDir == -1
+isBearCHOCH = bearBreak and trendDir != -1
+
+if bullBreak
+    if showBOS and isBullBOS
+        line.new(lastExtPHbar, bosPHRef, bar_index, bosPHRef,
+             color=bosColor, style=line.style_dashed, width=2)
+        label.new(bar_index, bosPHRef, "BOS", style=label.style_label_down,
+             color=color.new(bosColor, 30), textcolor=color.black, size=size.small)
+    if showCHOCH and isBullCHOCH
+        line.new(lastExtPHbar, bosPHRef, bar_index, bosPHRef,
+             color=chochColor, style=line.style_solid, width=2)
+        label.new(bar_index, bosPHRef, "CHoCH", style=label.style_label_down,
+             color=color.new(chochColor, 30), textcolor=color.black, size=size.small)
+    trendDir := 1
+    bosPHRef := na
+
+if bearBreak
+    if showBOS and isBearBOS
+        line.new(lastExtPLbar, bosPLRef, bar_index, bosPLRef,
+             color=bosColor, style=line.style_dashed, width=2)
+        label.new(bar_index, bosPLRef, "BOS", style=label.style_label_up,
+             color=color.new(bosColor, 30), textcolor=color.black, size=size.small)
+    if showCHOCH and isBearCHOCH
+        line.new(lastExtPLbar, bosPLRef, bar_index, bosPLRef,
+             color=chochColor, style=line.style_solid, width=2)
+        label.new(bar_index, bosPLRef, "CHoCH", style=label.style_label_up,
+             color=color.new(chochColor, 30), textcolor=color.black, size=size.small)
+    trendDir := -1
+    bosPLRef := na
+
+// ════════════════════════════════════════════════════════════════════════════
+//  5. LIQUIDITY  —  BSL / SSL, Equal Highs / Lows, Sweeps
+// ════════════════════════════════════════════════════════════════════════════
+//  - Each confirmed external swing draws a horizontal line.
+//  - If a new pivot lands within tolerance of an existing un-swept level,
+//    it is labelled EQH / EQL (clustered liquidity).
+//  - A "sweep" = wick exceeds the level then close returns inside (rejection).
+//  - A full break (close beyond) is treated as BOS, not a sweep.
+
+type LiqLevel
+    line  ln
+    label lbl
+    float price
+    int   bar
+    int   count
+    bool  swept
+
+var array<LiqLevel> buyLiq  = array.new<LiqLevel>()
+var array<LiqLevel> sellLiq = array.new<LiqLevel>()
+
+addLiq(arr, p, b, baseColor, isHigh) =>
+    foundIdx = -1
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            lv = array.get(arr, i)
+            if not lv.swept and math.abs(lv.price - p) <= priceTol(p)
+                foundIdx := i
+                break
+    if foundIdx >= 0
+        lv = array.get(arr, foundIdx)
+        lv.count := lv.count + 1
+        if not na(lv.lbl)
+            label.delete(lv.lbl)
+        if showEQ
+            lv.lbl := label.new(bar_index, lv.price, isHigh ? "EQH" : "EQL",
+                 style=label.style_label_left,
+                 color=color.new(baseColor, 30), textcolor=color.white, size=size.tiny)
+    else
+        line  ln  = line.new(b, p, bar_index, p, color=color.new(baseColor, 30),
+             style=line.style_solid, width=1, extend=extend.right)
+        label lbl = na
+        if showLiq
+            lbl := label.new(bar_index, p, isHigh ? "BSL" : "SSL",
+                 style=label.style_label_left,
+                 color=color.new(baseColor, 60), textcolor=color.white, size=size.tiny)
+        nlvl = LiqLevel.new(ln, lbl, p, b, 1, false)
+        array.push(arr, nlvl)
+        while array.size(arr) > liqMaxN
+            old = array.shift(arr)
+            line.delete(old.ln)
+            if not na(old.lbl)
+                label.delete(old.lbl)
+
+if showLiq and not na(phE)
+    addLiq(buyLiq,  phE, bar_index - extLB, buySLColor,  true)
+if showLiq and not na(plE)
+    addLiq(sellLiq, plE, bar_index - extLB, sellSLColor, false)
+
+// ── Sweep detection: wick took level AND closed back inside ─────────────────
+sweepLevels(arr, isBuy) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            lv = array.get(arr, i)
+            if not lv.swept
+                wickTook   = isBuy ? high  > lv.price : low  < lv.price
+                closedBack = isBuy ? close < lv.price : close > lv.price
+                if wickTook and closedBack
+                    lv.swept := true
+                    if showSweeps
+                        label.new(bar_index, isBuy ? high : low, "×",
+                             style=isBuy ? label.style_label_down : label.style_label_up,
+                             color=color.new(isBuy ? buySLColor : sellSLColor, 30),
+                             textcolor=color.white, size=size.small)
+                    line.set_color(lv.ln, color.new(color.gray, 50))
+                    line.set_style(lv.ln, line.style_dotted)
+
+if showLiq
+    sweepLevels(buyLiq,  true)
+    sweepLevels(sellLiq, false)
+
+// ════════════════════════════════════════════════════════════════════════════
+//  6. FAIR VALUE GAPS / IMBALANCES / VOIDS / REBALANCING
+// ════════════════════════════════════════════════════════════════════════════
+//  - 3-bar imbalance: bullish FVG when low[0] > high[2]; bearish when high[0] < low[2].
+//  - A gap is "rebalanced" once price returns to its midpoint (50% / CE)
+//    or, optionally, fully fills the gap.
+//  - Rebalanced gaps are recoloured grey but not removed (history preserved).
+
+type FVG
+    box   bx
+    line  midLn
+    float top
+    float bot
+    bool  isBull
+    bool  filled
+
+var array<FVG> fvgs = array.new<FVG>()
+
+if showFVG and bar_index > 2
+    bullGap  = low > high[2]
+    bearGap  = high < low[2]
+    bullSize = bullGap ? (low  - high[2]) / close * 100.0 : 0.0
+    bearSize = bearGap ? (low[2] - high)  / close * 100.0 : 0.0
+
+    if bullGap and bullSize >= fvgMinPct
+        bx = box.new(bar_index - 2, low, bar_index, high[2],
+             bgcolor=bullFVGColor,
+             border_color=color.new(bullFVGColor, 50), extend=extend.right)
+        mid = (low + high[2]) / 2.0
+        midLn = showMidLine
+             ? line.new(bar_index - 2, mid, bar_index, mid,
+                  color=color.new(bullFVGColor, 0), style=line.style_dotted, extend=extend.right)
+             : na
+        array.push(fvgs, FVG.new(bx, midLn, low, high[2], true, false))
+
+    if bearGap and bearSize >= fvgMinPct
+        bx = box.new(bar_index - 2, low[2], bar_index, high,
+             bgcolor=bearFVGColor,
+             border_color=color.new(bearFVGColor, 50), extend=extend.right)
+        mid = (low[2] + high) / 2.0
+        midLn = showMidLine
+             ? line.new(bar_index - 2, mid, bar_index, mid,
+                  color=color.new(bearFVGColor, 0), style=line.style_dotted, extend=extend.right)
+             : na
+        array.push(fvgs, FVG.new(bx, midLn, low[2], high, false, false))
+
+    while array.size(fvgs) > fvgKeepN
+        old = array.shift(fvgs)
+        box.delete(old.bx)
+        if not na(old.midLn)
+            line.delete(old.midLn)
+
+// ── Rebalance check ─────────────────────────────────────────────────────────
+if array.size(fvgs) > 0
+    for i = 0 to array.size(fvgs) - 1
+        f = array.get(fvgs, i)
+        if not f.filled
+            mid = (f.top + f.bot) / 2.0
+            triggered = fvgRebal == "Midpoint"
+                 ? (f.isBull ? low <= mid : high >= mid)
+                 : (f.isBull ? close <= f.bot : close >= f.top)
+            if triggered
+                f.filled := true
+                box.set_bgcolor(f.bx, filledFVGColor)
+                box.set_border_color(f.bx, color.new(filledFVGColor, 30))
+                if not na(f.midLn)
+                    line.set_color(f.midLn, color.new(color.gray, 60))
+
+// ════════════════════════════════════════════════════════════════════════════
+//  7-8. ORDER BLOCKS  &  BREAKER BLOCKS
+// ════════════════════════════════════════════════════════════════════════════
+//  - On BOS / CHoCH we look back for the LAST opposing candle: that's the OB.
+//  - When an OB is invalidated (close beyond its far edge) it FLIPS into a
+//    Breaker Block of the opposite polarity.
+//  - When the breaker is also invalidated, the box is removed.
+
+type OB
+    box   bx
+    float top
+    float bot
+    bool  isBull       // current polarity (flips when becoming a breaker)
+    bool  isBreaker
+    bool  invalid
+
+var array<OB> obs = array.new<OB>()
+
+createOB(isBull) =>
+    obIdx = -1
+    for k = 1 to math.min(extLB * 2, 50)
+        if isBull and close[k] < open[k]
+            obIdx := k
+            break
+        if not isBull and close[k] > open[k]
+            obIdx := k
+            break
+    if obIdx > 0
+        oH = high[obIdx]
+        oL = low[obIdx]
+        bx = box.new(bar_index - obIdx, oH, bar_index, oL,
+             bgcolor=isBull ? bullOBColor : bearOBColor,
+             border_color=color.new(isBull ? bullOBColor : bearOBColor, 20),
+             extend=extend.right)
+        array.push(obs, OB.new(bx, oH, oL, isBull, false, false))
+        while array.size(obs) > obKeepN * 2
+            old = array.shift(obs)
+            box.delete(old.bx)
+
+if showOB and (isBullBOS or isBullCHOCH)
+    createOB(true)
+if showOB and (isBearBOS or isBearCHOCH)
+    createOB(false)
+
+// ── Invalidation / Breaker conversion ───────────────────────────────────────
+if array.size(obs) > 0
+    for i = 0 to array.size(obs) - 1
+        o = array.get(obs, i)
+        if not o.invalid
+            if o.isBull
+                if close < o.bot
+                    if showBreakers and not o.isBreaker
+                        o.isBull    := false
+                        o.isBreaker := true
+                        box.set_bgcolor(o.bx, bearBreakerColor)
+                        box.set_border_color(o.bx, color.new(bearBreakerColor, 20))
+                    else
+                        o.invalid := true
+                        box.delete(o.bx)
+            else
+                if close > o.top
+                    if showBreakers and not o.isBreaker
+                        o.isBull    := true
+                        o.isBreaker := true
+                        box.set_bgcolor(o.bx, bullBreakerColor)
+                        box.set_border_color(o.bx, color.new(bullBreakerColor, 20))
+                    else
+                        o.invalid := true
+                        box.delete(o.bx)
+
+// ════════════════════════════════════════════════════════════════════════════
+//  9. PREMIUM / DISCOUNT ZONES (Dealing Range + 50% Equilibrium)
+// ════════════════════════════════════════════════════════════════════════════
+//  - Range = highest high / lowest low over `pdLB`.
+//  - Premium = top 25% of range, Discount = bottom 25%.
+//  - Equilibrium = midpoint. Buy in discount during uptrends, sell in premium
+//    during downtrends.
+
+var box  premBox = na
+var box  discBox = na
+var line eqLine  = na
+
+if showPD
+    rH = ta.highest(high, pdLB)
+    rL = ta.lowest(low,   pdLB)
+    rRange = rH - rL
+    rEq    = (rH + rL) / 2.0
+    pTop   = rH
+    pBot   = rH - rRange * 0.25
+    dTop   = rL + rRange * 0.25
+    dBot   = rL
+    if barstate.islast
+        if not na(premBox)
+            box.delete(premBox)
+        if not na(discBox)
+            box.delete(discBox)
+        if not na(eqLine)
+            line.delete(eqLine)
+        premBox := box.new(bar_index - pdLB, pTop, bar_index, pBot,
+             bgcolor=premColor, border_color=color.new(color.red, 60),
+             border_style=line.style_dotted, extend=extend.right)
+        discBox := box.new(bar_index - pdLB, dTop, bar_index, dBot,
+             bgcolor=discColor, border_color=color.new(color.green, 60),
+             border_style=line.style_dotted, extend=extend.right)
+        eqLine := line.new(bar_index - pdLB, rEq, bar_index, rEq,
+             color=eqLineColor, style=line.style_dashed, width=1, extend=extend.right)
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ════════════════════════════════════════════════════════════════════════════
+alertcondition(isBullBOS,   "Bullish BOS",   "Bullish Break of Structure")
+alertcondition(isBearBOS,   "Bearish BOS",   "Bearish Break of Structure")
+alertcondition(isBullCHOCH, "Bullish CHoCH", "Bullish Change of Character")
+alertcondition(isBearCHOCH, "Bearish CHoCH", "Bearish Change of Character")
