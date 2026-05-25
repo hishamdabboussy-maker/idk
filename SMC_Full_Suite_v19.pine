@@ -258,48 +258,56 @@ if showStruct and showExternal and extBearCHoCH
     lastExtStructBar := bar_index
     extLastPL := na
 
-// ── Strong/Weak swing tags (FIX B7: evaluate breaks first, then label) ───────
-var float prevExtPH          = na
-var float prevExtPL          = na
-var bool  prevSwingLowBroken  = false
-var bool  prevSwingHighBroken = false
-
-// Update break-state BEFORE drawing this bar's swing labels
-if extBullBOS_raw or extBullCHoCH
-    prevSwingHighBroken := true
-if extBearBOS_raw or extBearCHoCH
-    prevSwingLowBroken  := true
+// ── Strong/Weak swing tags (FIX C: standard ICT semantics) ───────────────────
+//   SH = strong high  : the pivot has NOT been broken (bears defended it)
+//   wH = weak high    : the pivot was already broken bullishly during its
+//                       confirmation window
+//   SL = strong low / wL = weak low (mirror)
+// We look back through the externalLen confirmation window and check whether
+// any close in that window already broke the pivot's level.
+var float prevExtPH = na
+var float prevExtPL = na
 
 if not na(extPH)
+    pivotLevel = extPH
+    brokenUp   = false
+    for i = 0 to externalLen
+        if close[i] > pivotLevel
+            brokenUp := true
+            break
     if showSwingPoints and showStruct and lblAllowSwing
         if strongWeakLbl
-            tag = prevSwingLowBroken ? "SH" : "wH"
+            tag = brokenUp ? "wH" : "SH"
             label.new(bar_index - externalLen, extPH, tag,
                  style=label.style_label_down,
-                 color=color.new(prevSwingLowBroken ? bearStructColor : color.gray, 50),
+                 color=color.new(brokenUp ? color.gray : bearStructColor, 50),
                  textcolor=color.white, size=size.tiny)
         else
             label.new(bar_index - externalLen, extPH, "H",
                  style=label.style_label_down,
                  color=color.new(bearStructColor, 60),
                  textcolor=color.white, size=size.tiny)
-    prevExtPH           := extPH
-    prevSwingHighBroken := false
+    prevExtPH := extPH
 if not na(extPL)
+    pivotLevel = extPL
+    brokenDown = false
+    for i = 0 to externalLen
+        if close[i] < pivotLevel
+            brokenDown := true
+            break
     if showSwingPoints and showStruct and lblAllowSwing
         if strongWeakLbl
-            tag = prevSwingHighBroken ? "SL" : "wL"
+            tag = brokenDown ? "wL" : "SL"
             label.new(bar_index - externalLen, extPL, tag,
                  style=label.style_label_up,
-                 color=color.new(prevSwingHighBroken ? bullStructColor : color.gray, 50),
+                 color=color.new(brokenDown ? color.gray : bullStructColor, 50),
                  textcolor=color.white, size=size.tiny)
         else
             label.new(bar_index - externalLen, extPL, "L",
                  style=label.style_label_up,
                  color=color.new(bullStructColor, 60),
                  textcolor=color.white, size=size.tiny)
-    prevExtPL          := extPL
-    prevSwingLowBroken := false
+    prevExtPL := extPL
 
 ph = intPH
 pl = intPL
@@ -1095,9 +1103,30 @@ if showPD and barstate.islast
         label.new(bar_index, swingLo, "DISCOUNT", style=label.style_label_left, color=color.new(pdDiscColor, 30), textcolor=color.white, size=size.tiny)
         label.new(bar_index, swingMid, "EQ",      style=label.style_label_left, color=color.new(color.gray, 60), textcolor=color.white, size=size.tiny)
 
+// FIX A: compute oteHi/oteLo on every bar so isInOTE works historically.
+//        Box drawing stays inside barstate.islast for performance.
 // FIX B1: clear BOTH stale OTE boxes before drawing new
-var float oteHi = na
-var float oteLo = na
+// FIX B (label leak): use var label refs + delete-before-recreate
+var float oteHi    = na
+var float oteLo    = na
+var label otePremLbl = na
+var label oteDiscLbl = na
+var label oteEqLbl   = na
+var label oteOteLbl  = na
+
+// Compute OTE bounds every bar (FIX A)
+oteHi := na
+oteLo := na
+if showPD and showOTE
+    leg = swingHi - swingLo
+    if extTrend == 1 and not na(extLastPL)
+        oteHi := swingHi - leg * 0.62
+        oteLo := swingHi - leg * 0.79
+    else if extTrend == -1 and not na(extLastPH)
+        oteLo := swingLo + leg * 0.62
+        oteHi := swingLo + leg * 0.79
+
+// Draw on last bar only
 if showPD and showOTE and barstate.islast
     if not na(pdOTEBull)
         box.delete(pdOTEBull)
@@ -1105,19 +1134,16 @@ if showPD and showOTE and barstate.islast
     if not na(pdOTEBear)
         box.delete(pdOTEBear)
         pdOTEBear := na
-    leg = swingHi - swingLo
-    if extTrend == 1 and not na(extLastPL)
-        oteHi := swingHi - leg * 0.62
-        oteLo := swingHi - leg * 0.79
+    if not na(oteOteLbl)
+        label.delete(oteOteLbl)
+    if extTrend == 1 and not na(extLastPL) and not na(oteHi) and not na(oteLo)
         pdOTEBull := box.new(bar_index - swingBars, oteHi, bar_index, oteLo, bgcolor=pdOTEColor, border_color=pdOTEColor, extend=extend.right)
         if lblAllowHTF
-            label.new(bar_index, math.avg(oteHi, oteLo), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
-    else if extTrend == -1 and not na(extLastPH)
-        oteLo := swingLo + leg * 0.62
-        oteHi := swingLo + leg * 0.79
+            oteOteLbl := label.new(bar_index, math.avg(oteHi, oteLo), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
+    else if extTrend == -1 and not na(extLastPH) and not na(oteHi) and not na(oteLo)
         pdOTEBear := box.new(bar_index - swingBars, oteHi, bar_index, oteLo, bgcolor=pdOTEColor, border_color=pdOTEColor, extend=extend.right)
         if lblAllowHTF
-            label.new(bar_index, math.avg(oteHi, oteLo), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
+            oteOteLbl := label.new(bar_index, math.avg(oteHi, oteLo), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
 
 isInOTE = not na(oteHi) and not na(oteLo) and close <= oteHi and close >= oteLo
 
