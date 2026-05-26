@@ -420,36 +420,9 @@ if showOB and bearBOS
         if oKZ or lblAllowOB
             label.new(oB, oL, obTxt, style=label.style_label_up, color=oKZ ? color.new(obBearColor, 30) : obBearColor, textcolor=color.white, size=size.tiny)
 
-if showOB and array.size(obBullBoxes) > 0
-    for i = 0 to array.size(obBullBoxes) - 1
-        if not array.get(obBullMitig, i)
-            mp = obMitigMode == "Wick" ? low : close
-            if mp < array.get(obBullLo, i)
-                if obHideMitig
-                    box.delete(array.get(obBullBoxes, i))
-                array.set(obBullMitig, i, true)
-if showOB and array.size(obBearBoxes) > 0
-    for i = 0 to array.size(obBearBoxes) - 1
-        if not array.get(obBearMitig, i)
-            mp = obMitigMode == "Wick" ? high : close
-            if mp > array.get(obBearHi, i)
-                if obHideMitig
-                    box.delete(array.get(obBearBoxes, i))
-                array.set(obBearMitig, i, true)
-
 // ══════════════════════════════════════════════════════════════════════════════
-//  BREAKER BLOCKS  (v21.1 — confirmation-based, more reliable)
-//
-//  v21.0 spawned a BB the bar an OB was mitigated. That fired even on wicks
-//  / liquidity grabs that did NOT actually flip the trend. v21.1 holds each
-//  mitigated OB in a 'pending' queue and only promotes it to a BB when a real
-//  Break-of-Structure prints in the new direction within the configurable
-//  window. Optional displacement and min-size filters remove the rest of
-//  the chop.
-//
-//  ICT definition restored:
-//    Bear BB = failed Bull OB  +  confirming bear BOS  →  former demand = supply
-//    Bull BB = failed Bear OB  +  confirming bull BOS  →  former supply = demand
+//  BREAKER BLOCKS — INPUTS & STATE  (logic block lives further down)
+//  Declared here so OB mitigation can queue BB candidates inline.
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpBB = "Breaker Blocks"
@@ -475,8 +448,6 @@ var bbBearHi       = array.new_float()
 var bbBearLo       = array.new_float()
 var bbBearMitig    = array.new_bool()
 var bbBearKZ       = array.new_bool()
-var bbBearSpawnedH = array.new_float()
-var bbBullSpawnedH = array.new_float()
 
 var pendBBBearHi   = array.new_float()
 var pendBBBearLo   = array.new_float()
@@ -487,20 +458,61 @@ var pendBBBullLo   = array.new_float()
 var pendBBBullAt   = array.new_int()
 var pendBBBullLeft = array.new_int()
 
-var int MAX_PEND_BB = 30
-var int MAX_SPAWN   = 50
+var int MAX_PEND_BB = 20
 
-_alreadyHandled(arr, oH) =>
-    found = false
-    if oH != 0 and array.size(arr) > 0
-        for k = 0 to array.size(arr) - 1
-            if math.abs(array.get(arr, k) - oH) / math.abs(oH) < 0.0005
-                found := true
-                break
-    found
+if showOB and array.size(obBullBoxes) > 0
+    for i = 0 to array.size(obBullBoxes) - 1
+        if not array.get(obBullMitig, i)
+            mp = obMitigMode == "Wick" ? low : close
+            if mp < array.get(obBullLo, i)
+                if obHideMitig
+                    box.delete(array.get(obBullBoxes, i))
+                array.set(obBullMitig, i, true)
+                // BB pipeline — inline queue (only fires once per OB transition)
+                if showBB
+                    while array.size(pendBBBearHi) >= MAX_PEND_BB
+                        array.shift(pendBBBearHi)
+                        array.shift(pendBBBearLo)
+                        array.shift(pendBBBearAt)
+                        array.shift(pendBBBearLeft)
+                    array.push(pendBBBearHi,   array.get(obBullHi,   i))
+                    array.push(pendBBBearLo,   array.get(obBullLo,   i))
+                    array.push(pendBBBearAt,   bar_index)
+                    array.push(pendBBBearLeft, array.get(obBullLeft, i))
+if showOB and array.size(obBearBoxes) > 0
+    for i = 0 to array.size(obBearBoxes) - 1
+        if not array.get(obBearMitig, i)
+            mp = obMitigMode == "Wick" ? high : close
+            if mp > array.get(obBearHi, i)
+                if obHideMitig
+                    box.delete(array.get(obBearBoxes, i))
+                array.set(obBearMitig, i, true)
+                // BB pipeline — inline queue (only fires once per OB transition)
+                if showBB
+                    while array.size(pendBBBullHi) >= MAX_PEND_BB
+                        array.shift(pendBBBullHi)
+                        array.shift(pendBBBullLo)
+                        array.shift(pendBBBullAt)
+                        array.shift(pendBBBullLeft)
+                    array.push(pendBBBullHi,   array.get(obBearHi,   i))
+                    array.push(pendBBBullLo,   array.get(obBearLo,   i))
+                    array.push(pendBBBullAt,   bar_index)
+                    array.push(pendBBBullLeft, array.get(obBearLeft, i))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BREAKER BLOCKS — PROCESSING  (v21.2 — perf fix)
+//
+//  v21.0 spawned a BB the bar an OB was mitigated → noisy.
+//  v21.1 added BOS confirmation but a per-bar OB-scan loop blew the >500ms
+//        Pine loop limit on busy charts.
+//  v21.2 inlines BB queueing into OB mitigation (zero per-bar scan), and
+//        only walks the pending queue when a BOS prints OR the head entry
+//        is stale. Same ICT-correct result, cheap CPU.
+// ══════════════════════════════════════════════════════════════════════════════
 
 spawnBearBB(oH, oL, oLeft) =>
-    if bbMinSizeATR == 0.0 or (oH - oL) >= bbMinSizeATR * atr14
+    sizeOK = bbMinSizeATR == 0.0 or (oH - oL) >= bbMinSizeATR * atr14
+    if sizeOK
         isKZ = bbKZTag and inAnyKZ
         while array.size(bbBearBoxes) >= bbMaxBoxes
             box.delete(array.shift(bbBearBoxes))
@@ -517,9 +529,11 @@ spawnBearBB(oH, oL, oLeft) =>
         array.push(bbBearKZ, isKZ)
         if isKZ or lblAllowBB
             label.new(bar_index, oH, isKZ ? "★BB" : "BB", style=label.style_label_down, color=isKZ ? color.new(bbBearColor, 30) : bbBearColor, textcolor=color.white, size=size.tiny)
+    sizeOK
 
 spawnBullBB(oH, oL, oLeft) =>
-    if bbMinSizeATR == 0.0 or (oH - oL) >= bbMinSizeATR * atr14
+    sizeOK = bbMinSizeATR == 0.0 or (oH - oL) >= bbMinSizeATR * atr14
+    if sizeOK
         isKZ = bbKZTag and inAnyKZ
         while array.size(bbBullBoxes) >= bbMaxBoxes
             box.delete(array.shift(bbBullBoxes))
@@ -536,96 +550,57 @@ spawnBullBB(oH, oL, oLeft) =>
         array.push(bbBullKZ, isKZ)
         if isKZ or lblAllowBB
             label.new(bar_index, oL, isKZ ? "★BB" : "BB", style=label.style_label_up, color=isKZ ? color.new(bbBullColor, 30) : bbBullColor, textcolor=color.white, size=size.tiny)
+    sizeOK
 
-// Step 1 — queue (or instantly spawn) freshly-mitigated OBs
-if showBB and showOB
-    if array.size(obBullBoxes) > 0
-        for i = 0 to array.size(obBullBoxes) - 1
-            if array.get(obBullMitig, i) and not _alreadyHandled(bbBearSpawnedH, array.get(obBullHi, i))
-                oH    = array.get(obBullHi,   i)
-                oL    = array.get(obBullLo,   i)
-                oLeft = array.get(obBullLeft, i)
-                while array.size(bbBearSpawnedH) >= MAX_SPAWN
-                    array.shift(bbBearSpawnedH)
-                array.push(bbBearSpawnedH, oH)
-                if not bbRequireBOS
-                    spawnBearBB(oH, oL, oLeft)
-                else
-                    while array.size(pendBBBearHi) >= MAX_PEND_BB
-                        array.shift(pendBBBearHi)
-                        array.shift(pendBBBearLo)
-                        array.shift(pendBBBearAt)
-                        array.shift(pendBBBearLeft)
-                    array.push(pendBBBearHi,   oH)
-                    array.push(pendBBBearLo,   oL)
-                    array.push(pendBBBearAt,   bar_index)
-                    array.push(pendBBBearLeft, oLeft)
-    if array.size(obBearBoxes) > 0
-        for i = 0 to array.size(obBearBoxes) - 1
-            if array.get(obBearMitig, i) and not _alreadyHandled(bbBullSpawnedH, array.get(obBearHi, i))
-                oH    = array.get(obBearHi,   i)
-                oL    = array.get(obBearLo,   i)
-                oLeft = array.get(obBearLeft, i)
-                while array.size(bbBullSpawnedH) >= MAX_SPAWN
-                    array.shift(bbBullSpawnedH)
-                array.push(bbBullSpawnedH, oH)
-                if not bbRequireBOS
-                    spawnBullBB(oH, oL, oLeft)
-                else
-                    while array.size(pendBBBullHi) >= MAX_PEND_BB
-                        array.shift(pendBBBullHi)
-                        array.shift(pendBBBullLo)
-                        array.shift(pendBBBullAt)
-                        array.shift(pendBBBullLeft)
-                    array.push(pendBBBullHi,   oH)
-                    array.push(pendBBBullLo,   oL)
-                    array.push(pendBBBullAt,   bar_index)
-                    array.push(pendBBBullLeft, oLeft)
+// Drain pending queue:
+//  - bbRequireBOS=false: every queued candidate is promoted immediately
+//  - bbRequireBOS=true : drain the queue when a BOS prints in the right
+//                       direction; expire stale head entries every bar.
+if showBB
+    if not bbRequireBOS
+        while array.size(pendBBBearHi) > 0
+            spawnBearBB(array.get(pendBBBearHi, 0), array.get(pendBBBearLo, 0), array.get(pendBBBearLeft, 0))
+            array.shift(pendBBBearHi)
+            array.shift(pendBBBearLo)
+            array.shift(pendBBBearAt)
+            array.shift(pendBBBearLeft)
+        while array.size(pendBBBullHi) > 0
+            spawnBullBB(array.get(pendBBBullHi, 0), array.get(pendBBBullLo, 0), array.get(pendBBBullLeft, 0))
+            array.shift(pendBBBullHi)
+            array.shift(pendBBBullLo)
+            array.shift(pendBBBullAt)
+            array.shift(pendBBBullLeft)
+    else
+        bearBOSAny = intBearBOS_raw or extBearBOS_raw
+        bullBOSAny = intBullBOS_raw or extBullBOS_raw
+        bosOK      = bbDispATR == 0.0 or (not na(atr14) and candleRange >= bbDispATR * atr14)
+        if bearBOSAny and bosOK and array.size(pendBBBearHi) > 0
+            while array.size(pendBBBearHi) > 0
+                spawnBearBB(array.get(pendBBBearHi, 0), array.get(pendBBBearLo, 0), array.get(pendBBBearLeft, 0))
+                array.shift(pendBBBearHi)
+                array.shift(pendBBBearLo)
+                array.shift(pendBBBearAt)
+                array.shift(pendBBBearLeft)
+        if bullBOSAny and bosOK and array.size(pendBBBullHi) > 0
+            while array.size(pendBBBullHi) > 0
+                spawnBullBB(array.get(pendBBBullHi, 0), array.get(pendBBBullLo, 0), array.get(pendBBBullLeft, 0))
+                array.shift(pendBBBullHi)
+                array.shift(pendBBBullLo)
+                array.shift(pendBBBullAt)
+                array.shift(pendBBBullLeft)
+        // Cheap stale-expiry: only check the head entry (oldest); pending list is FIFO.
+        while array.size(pendBBBearHi) > 0 and bar_index - array.get(pendBBBearAt, 0) > bbConfirmBars
+            array.shift(pendBBBearHi)
+            array.shift(pendBBBearLo)
+            array.shift(pendBBBearAt)
+            array.shift(pendBBBearLeft)
+        while array.size(pendBBBullHi) > 0 and bar_index - array.get(pendBBBullAt, 0) > bbConfirmBars
+            array.shift(pendBBBullHi)
+            array.shift(pendBBBullLo)
+            array.shift(pendBBBullAt)
+            array.shift(pendBBBullLeft)
 
-// Step 2 — promote pending BBs when a confirming BOS prints
-if showBB and bbRequireBOS
-    bearBOSAny = intBearBOS_raw or extBearBOS_raw
-    bullBOSAny = intBullBOS_raw or extBullBOS_raw
-    bosOK      = bbDispATR == 0.0 or (not na(atr14) and candleRange >= bbDispATR * atr14)
-
-    if array.size(pendBBBearHi) > 0
-        idxP = array.size(pendBBBearHi) - 1
-        while idxP >= 0
-            ageBars = bar_index - array.get(pendBBBearAt, idxP)
-            expired = ageBars > bbConfirmBars
-            confirmed = bearBOSAny and bosOK
-            if expired
-                array.remove(pendBBBearHi,   idxP)
-                array.remove(pendBBBearLo,   idxP)
-                array.remove(pendBBBearAt,   idxP)
-                array.remove(pendBBBearLeft, idxP)
-            else if confirmed
-                spawnBearBB(array.get(pendBBBearHi, idxP), array.get(pendBBBearLo, idxP), array.get(pendBBBearLeft, idxP))
-                array.remove(pendBBBearHi,   idxP)
-                array.remove(pendBBBearLo,   idxP)
-                array.remove(pendBBBearAt,   idxP)
-                array.remove(pendBBBearLeft, idxP)
-            idxP -= 1
-
-    if array.size(pendBBBullHi) > 0
-        idxP = array.size(pendBBBullHi) - 1
-        while idxP >= 0
-            ageBars = bar_index - array.get(pendBBBullAt, idxP)
-            expired = ageBars > bbConfirmBars
-            confirmed = bullBOSAny and bosOK
-            if expired
-                array.remove(pendBBBullHi,   idxP)
-                array.remove(pendBBBullLo,   idxP)
-                array.remove(pendBBBullAt,   idxP)
-                array.remove(pendBBBullLeft, idxP)
-            else if confirmed
-                spawnBullBB(array.get(pendBBBullHi, idxP), array.get(pendBBBullLo, idxP), array.get(pendBBBullLeft, idxP))
-                array.remove(pendBBBullHi,   idxP)
-                array.remove(pendBBBullLo,   idxP)
-                array.remove(pendBBBullAt,   idxP)
-                array.remove(pendBBBullLeft, idxP)
-
-// Step 3 — BB mitigation (wick/close)
+// BB mitigation
 if showBB and array.size(bbBullBoxes) > 0
     for i = 0 to array.size(bbBullBoxes) - 1
         if not array.get(bbBullMitig, i)
