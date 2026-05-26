@@ -26,13 +26,10 @@ indicator("SMC v21 — Part 2: Context & HTF", overlay=true, max_boxes_count=500
 //        One subscription, every event. Drop-in for webhook bots.
 //   ADD  Right-edge label staggering (bar_index + N) so PD / AR / liquidity
 //        labels stop stacking on top of each other.
-//   CHG  Tighter readability defaults:
-//          proxPct          2.5  → 1.5
-//          labelDensity     Important → Minimal
-//          liqMaxLines      5    → 3
-//          liqLabels        true → false
-//          ema3Len          20   → 21  (Fib alternative)
-//        Lighter background colors (alpha +6 to +8) for sessions and macros.
+//   CHG  Signal-creation defaults reverted to v20 (more OB/BB/FVG/RB density).
+//        Visual changes kept: PD/OTE as lines, label staggering, lighter
+//        session bg, live Asian Range, macro vertical lines, confluence
+//        scoring, structured alert.
 //
 //  This indicator contains:
 //    • Volume Imbalances
@@ -70,9 +67,9 @@ indicator("SMC v21 — Part 2: Context & HTF", overlay=true, max_boxes_count=500
 grpDISP = "Display & Readability"
 extendBoxes  = input.bool(true,  "Extend zones to right",      group=grpDISP)
 proxEnable   = input.bool(true,  "Hide far zones (proximity)", group=grpDISP)
-proxPct      = input.float(1.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1)
+proxPct      = input.float(2.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1)
 masterLabels = input.bool(true,  "Show zone labels",           group=grpDISP)
-labelDensity = input.string("Minimal", "Label density", group=grpDISP, options=["All","Important","Minimal"])
+labelDensity = input.string("Important", "Label density", group=grpDISP, options=["All","Important","Minimal"])
 labelStagger = input.int(8, "Right-edge label stagger (bars)", group=grpDISP, minval=0, maxval=50, tooltip="Spreads right-side labels horizontally so they stop stacking. 0 = legacy behavior (stacked).")
 
 extRight    = extendBoxes ? extend.right : extend.none
@@ -112,7 +109,7 @@ labelX(slot) => bar_index + slot * labelStagger
 
 grpMS = "Market Structure (slim)"
 useBodyBreak    = input.bool(false, "Body-break (else close-break)", group=grpMS)
-bosATRFilter    = input.float(0.25, "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05)
+bosATRFilter    = input.float(0.0,  "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05)
 internalLen     = input.int(5,      "Internal swing lookback",     group=grpMS, minval=2, maxval=30)
 externalLen     = input.int(25,     "External swing lookback",     group=grpMS, minval=10, maxval=100)
 bullStructColor = input.color(color.new(#26A69A, 0),  "Bullish structure", group=grpMS)
@@ -291,7 +288,7 @@ liqTolerance = input.float(0.05, "Tolerance (Percent mode)", group=grpLIQ, minva
 liqTolTicks  = input.int(50,     "Tolerance (Ticks mode)",  group=grpLIQ, minval=1, maxval=10000)
 liqTolATR    = input.float(0.10, "Tolerance (ATR mode)",    group=grpLIQ, minval=0.01, maxval=2.0, step=0.01)
 liqMinTouch  = input.int(2,      "Min pivots to confirm",   group=grpLIQ, minval=2, maxval=5)
-liqMaxLines  = input.int(3,      "Max levels per side",     group=grpLIQ, minval=1, maxval=12)
+liqMaxLines  = input.int(5,      "Max levels per side",     group=grpLIQ, minval=1, maxval=12)
 liqEQHColor  = input.color(color.new(#FF5252, 50), "EQH (BSL)", group=grpLIQ)
 liqEQLColor  = input.color(color.new(#69F0AE, 50), "EQL (SSL)", group=grpLIQ)
 liqSweptHide = input.bool(false, "Hide swept lines",        group=grpLIQ)
@@ -719,7 +716,7 @@ showMonthLiq = input.bool(true,  "Show 30-day liquidity (H+L)", group=grpLIQL)
 liqStyleIn   = input.string("Solid", "Line style", group=grpLIQL, options=["Solid","Dashed","Dotted"])
 liqWidth     = input.int(2,      "Line width",  group=grpLIQL, minval=1, maxval=4)
 liqExtend    = input.bool(true,  "Extend to right", group=grpLIQL)
-liqLabels    = input.bool(false, "Show price labels", group=grpLIQL, tooltip="Off by default in v21 — the lines themselves are sufficient.")
+liqLabels    = input.bool(true,  "Show price labels", group=grpLIQL, tooltip="ON by default — staggered to the right so they don't stack.")
 liqShowMid   = input.bool(false, "Show midline of each range", group=grpLIQL)
 dayHiCol     = input.color(color.new(#FFB300, 0), "1D High",  group=grpLIQL)
 dayLoCol     = input.color(color.new(#FFB300, 0), "1D Low",   group=grpLIQL)

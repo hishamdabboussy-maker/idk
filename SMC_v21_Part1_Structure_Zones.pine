@@ -12,17 +12,12 @@ indicator("SMC v21 — Part 1: Structure & Zones", overlay=true, max_boxes_count
 //   ADD  Configurable far-zone fade alpha (was hard-coded to fully invisible).
 //        Default 92 = barely-visible outline so you don't lose track of zones
 //        outside proximity.
-//   ADD  bosATRFilter default 0.25 (was 0.0) — quietens 15m noise BOS.
-//   CHG  Tighter readability defaults:
-//          proxPct        2.5 → 1.5
-//          labelDensity   Important → Minimal
-//          obMaxBoxes     5   → 3
-//          bbMaxBoxes     4   → 3
-//          fvgMaxBoxes    3   → 2
-//          fvgMinATR      0.3 → 0.4
-//          mbDispATR      1.5 → 1.8
-//          dispMul        1.7 → 1.9
-//   FIX  MB section guarded with `showMB` to skip computation when off.
+//   CHG  Signal-creation thresholds reverted to v20 defaults so OB / BB / RB
+//        / FVG / MB density matches v20 (those were highly accurate).
+//        bosATRFilter is back to 0.0 — every close-break fires BOS.
+//        Rejection Blocks default ON (you specifically liked these).
+//        Visual / readability changes are kept (PD/OTE as lines, label
+//        staggering, lighter session bg, killzone-OB tagging).
 //
 //  This indicator contains:
 //    • Market Structure (BOS / CHoCH, internal & external, strong/weak swings)
@@ -54,10 +49,10 @@ indicator("SMC v21 — Part 1: Structure & Zones", overlay=true, max_boxes_count
 grpDISP = "Display & Readability"
 extendBoxes  = input.bool(true,  "Extend zones to right",      group=grpDISP)
 proxEnable   = input.bool(true,  "Hide far zones (proximity)", group=grpDISP)
-proxPct      = input.float(1.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1, tooltip="On 15m, 1.0–1.5% is plenty. Larger values produce a cluttered chart.")
+proxPct      = input.float(2.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1, tooltip="Higher = more zones visible. 2.5% restored as v20-default for full signal density.")
 farZoneAlpha = input.int(92,     "Far-zone fade alpha (0=solid, 100=invisible)", group=grpDISP, minval=70, maxval=100, tooltip="Zones outside proximity are tinted with this alpha. 100 = fully hidden.  92 = ghost-outline visible (default).")
 masterLabels = input.bool(true,  "Show zone labels",           group=grpDISP)
-labelDensity = input.string("Minimal", "Label density", group=grpDISP, options=["All","Important","Minimal"], tooltip="Minimal = only CHoCH and ★OB tags (recommended for 15m).\nImportant = also OB/BB/MSS.\nAll = every label.")
+labelDensity = input.string("Important", "Label density", group=grpDISP, options=["All","Important","Minimal"], tooltip="Important = OB/BB/CHoCH/★OB labels (v20 default).\nMinimal = only CHoCH and ★OB.\nAll = every label.")
 
 extRight    = extendBoxes ? extend.right : extend.none
 candleRange = high - low
@@ -112,7 +107,7 @@ inAnyKZ      = inLondonKZ or inNYKZ
 grpMS = "Market Structure"
 showStruct      = input.bool(true,  "Show market structure",       group=grpMS)
 useBodyBreak    = input.bool(false, "Body-break (else close-break)", group=grpMS, tooltip="Body-break (close AND open beyond) is stricter than close-break (ICT standard).")
-bosATRFilter    = input.float(0.25, "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05, tooltip="Reject BOS unless price closes at least N x ATR beyond the level. 0.25 default quietens 15m noise.")
+bosATRFilter    = input.float(0.0,  "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05, tooltip="Reject BOS unless price closes at least N x ATR beyond the level. 0 = v20 behavior (every close-break fires BOS, max OB/BB density).")
 internalLen     = input.int(5,      "Internal swing lookback",     group=grpMS, minval=2, maxval=30)
 externalLen     = input.int(25,     "External swing lookback",     group=grpMS, minval=10, maxval=100)
 showInternal    = input.bool(true,  "Show internal BOS/CHoCH",     group=grpMS)
@@ -371,7 +366,7 @@ if bearBOS
 
 grpOB = "Order Blocks"
 showOB      = input.bool(true,  "Show Order Blocks",  group=grpOB)
-obMaxBoxes  = input.int(3,      "Max OBs per side",   group=grpOB, minval=1, maxval=15)
+obMaxBoxes  = input.int(5,      "Max OBs per side",   group=grpOB, minval=1, maxval=15)
 obHideMitig = input.bool(true,  "Hide mitigated OBs", group=grpOB)
 obMitigMode = input.string("Close", "Mitigation by",  group=grpOB, options=["Wick","Close"])
 obBullColor = input.color(color.new(#2962FF, 75), "Bull OB", group=grpOB)
@@ -479,7 +474,7 @@ if showOB and array.size(obBearBoxes) > 0
 
 grpBB = "Breaker Blocks"
 showBB      = input.bool(true,  "Show Breaker Blocks", group=grpBB)
-bbMaxBoxes  = input.int(3,      "Max BBs per side",    group=grpBB, minval=1, maxval=15)
+bbMaxBoxes  = input.int(4,      "Max BBs per side",    group=grpBB, minval=1, maxval=15)
 bbBullColor = input.color(color.new(#26A69A, 70), "Bull BB", group=grpBB)
 bbBearColor = input.color(color.new(#EF5350, 70), "Bear BB", group=grpBB)
 
@@ -573,7 +568,7 @@ if showBB and array.size(bbBearBoxes) > 0
 
 grpMB = "Mitigation Blocks"
 showMB     = input.bool(true,  "Show Mitigation Blocks", group=grpMB)
-mbDispATR  = input.float(1.8,  "Displacement x ATR",     group=grpMB, minval=0.5, maxval=5.0, step=0.1)
+mbDispATR  = input.float(1.5,  "Displacement x ATR",     group=grpMB, minval=0.5, maxval=5.0, step=0.1)
 mbMaxBoxes = input.int(3,      "Max MBs per side",       group=grpMB, minval=1, maxval=10)
 mbBullColor= input.color(color.new(#FFC107, 75), "Bull MB", group=grpMB)
 mbBearColor= input.color(color.new(#9C27B0, 75), "Bear MB", group=grpMB)
@@ -640,8 +635,8 @@ if showMB and array.size(mbBearBoxes) > 0
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpRB = "Rejection Blocks"
-showRB      = input.bool(false, "Show Rejection Blocks", group=grpRB)
-rbWickRatio = input.float(0.65, "Min wick/range ratio",  group=grpRB, minval=0.4, maxval=0.9, step=0.05)
+showRB      = input.bool(true,  "Show Rejection Blocks", group=grpRB, tooltip="ON by default in this build — RB has been one of the highest-accuracy signals.")
+rbWickRatio = input.float(0.6,  "Min wick/range ratio",  group=grpRB, minval=0.4, maxval=0.9, step=0.05)
 rbMaxBoxes  = input.int(3,      "Max RBs per side",      group=grpRB, minval=1, maxval=10)
 rbHideMitig = input.bool(true,  "Hide mitigated RBs",    group=grpRB)
 rbBullColor = input.color(color.new(#00BCD4, 70), "Bull RB", group=grpRB)
@@ -709,9 +704,9 @@ if showRB and array.size(rbBearBoxes) > 0
 
 grpFVG = "Fair Value Gaps"
 showFVG     = input.bool(true,  "Show FVGs",              group=grpFVG)
-fvgMinSize  = input.float(0.05, "Min gap % (0=any)",      group=grpFVG, minval=0.0, maxval=2.0, step=0.01)
-fvgMinATR   = input.float(0.4,  "Min gap size (x ATR14)", group=grpFVG, minval=0.0, maxval=3.0, step=0.1)
-fvgMaxBoxes = input.int(2,      "Max FVGs per side",      group=grpFVG, minval=1, maxval=15)
+fvgMinSize  = input.float(0.1,  "Min gap % (0=any)",      group=grpFVG, minval=0.0, maxval=2.0, step=0.01)
+fvgMinATR   = input.float(0.3,  "Min gap size (x ATR14)", group=grpFVG, minval=0.0, maxval=3.0, step=0.1)
+fvgMaxBoxes = input.int(3,      "Max FVGs per side",      group=grpFVG, minval=1, maxval=15)
 showFVGMid  = input.bool(true,  "Show midline (CE)",      group=grpFVG)
 fvgBullColor= input.color(color.new(#00C853, 80), "Bull FVG", group=grpFVG)
 fvgBearColor= input.color(color.new(#FF1744, 80), "Bear FVG", group=grpFVG)
@@ -912,7 +907,7 @@ if showIFVG and array.size(ifvgBearBoxes) > 0
 
 grpDISP2 = "Displacement"
 showDisp = input.bool(true,  "Highlight displacement candles", group=grpDISP2)
-dispMul  = input.float(1.9,  "Min x ATR(14)",                  group=grpDISP2, minval=1.0, maxval=5.0, step=0.1)
+dispMul  = input.float(1.7,  "Min x ATR(14)",                  group=grpDISP2, minval=1.0, maxval=5.0, step=0.1)
 dispBullCol = input.color(color.new(#69F0AE, 0), "Bull displacement", group=grpDISP2)
 dispBearCol = input.color(color.new(#FF5252, 0), "Bear displacement", group=grpDISP2)
 
