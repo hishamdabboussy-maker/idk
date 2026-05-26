@@ -589,16 +589,31 @@ if showBB
                 array.shift(pendBBBullAt)
                 array.shift(pendBBBullLeft)
         // Cheap stale-expiry: only check the head entry (oldest); pending list is FIFO.
-        while array.size(pendBBBearHi) > 0 and bar_index - array.get(pendBBBearAt, 0) > bbConfirmBars
-            array.shift(pendBBBearHi)
-            array.shift(pendBBBearLo)
-            array.shift(pendBBBearAt)
-            array.shift(pendBBBearLeft)
-        while array.size(pendBBBullHi) > 0 and bar_index - array.get(pendBBBullAt, 0) > bbConfirmBars
-            array.shift(pendBBBullHi)
-            array.shift(pendBBBullLo)
-            array.shift(pendBBBullAt)
-            array.shift(pendBBBullLeft)
+        // Use an outer size guard + flag pattern: Pine v5 doesn't reliably
+        // short-circuit a compound while-condition that contains array.get(),
+        // so we keep the access strictly behind a size check.
+        if array.size(pendBBBearHi) > 0
+            keepBear = true
+            while keepBear
+                if bar_index - array.get(pendBBBearAt, 0) > bbConfirmBars
+                    array.shift(pendBBBearHi)
+                    array.shift(pendBBBearLo)
+                    array.shift(pendBBBearAt)
+                    array.shift(pendBBBearLeft)
+                    keepBear := array.size(pendBBBearHi) > 0
+                else
+                    keepBear := false
+        if array.size(pendBBBullHi) > 0
+            keepBull = true
+            while keepBull
+                if bar_index - array.get(pendBBBullAt, 0) > bbConfirmBars
+                    array.shift(pendBBBullHi)
+                    array.shift(pendBBBullLo)
+                    array.shift(pendBBBullAt)
+                    array.shift(pendBBBullLeft)
+                    keepBull := array.size(pendBBBullHi) > 0
+                else
+                    keepBull := false
 
 // BB mitigation
 if showBB and array.size(bbBullBoxes) > 0
