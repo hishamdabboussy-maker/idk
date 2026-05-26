@@ -1,0 +1,1255 @@
+//@version=5
+indicator("SMC v21 — Part 2: Context & HTF", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMC v21  —  PART 2 of 2   (Context, Liquidity, HTF & Composite Signals)
+//
+//  v21 CHANGELOG vs v20
+//   CHG  Premium / Discount drawn as 3 LINES instead of 2 filled boxes.
+//        Same information, ~70% less ink — the right edge of the chart is
+//        readable again.
+//   CHG  OTE drawn as 2 dashed LINES (62% / 79%) instead of a filled box.
+//   ADD  Live Asian Range: box updates every bar during the session, not
+//        only on session-end.
+//   ADD  Macro vertical line markers: on 15m a macro is only 1–2 bars, so
+//        the bgcolor was easy to miss. Vertical lines at session start are
+//        visible at any zoom.
+//   ADD  Confluence score on each HTF OB:
+//          +1  in OTE
+//          +1  in current killzone
+//          +1  near (within 0.25 % of) an EQH/EQL level
+//        Score is shown as a suffix in the OB label, e.g. "240OB ★3".
+//   ADD  Tick-based / ATR-based liquidity tolerance (in addition to %).
+//        Previously only % was available — broken for sub-dollar / very
+//        large-price assets.
+//   ADD  Composite structured alert via alert() emitting JSON.
+//        One subscription, every event. Drop-in for webhook bots.
+//   ADD  Right-edge label staggering (bar_index + N) so PD / AR / liquidity
+//        labels stop stacking on top of each other.
+//   CHG  Tighter readability defaults:
+//          proxPct          2.5  → 1.5
+//          labelDensity     Important → Minimal
+//          liqMaxLines      5    → 3
+//          liqLabels        true → false
+//          ema3Len          20   → 21  (Fib alternative)
+//        Lighter background colors (alpha +6 to +8) for sessions and macros.
+//
+//  This indicator contains:
+//    • Volume Imbalances
+//    • Liquidity (EQH / EQL + sweeps)  with flexible tolerance
+//    • Premium / Discount / OTE  (lines, not fills)
+//    • Sessions / Killzones (lighter)
+//    • Live Asian Range
+//    • ICT Macros (vertical-line markers)
+//    • Periodic Levels (D / W / M opens + previous H/L)
+//    • Liquidity Levels (1D / 7D / 30D rolling H/L)
+//    • HTF Order Blocks  with confluence scoring
+//    • HTF Fair Value Gaps
+//    • HTF Premium / Discount
+//    • EMAs (3-line)
+//    • Composite "A+" setup signals
+//    • Structured alert() with JSON payload
+//    • Mini dashboard
+//
+//  COMPANION FILE  (Part 1 v21) covers:
+//    • Market Structure (BOS / CHoCH, internal & external, strong/weak swings)
+//    • Order Blocks (with killzone-aware grading)
+//    • Breaker Blocks, Mitigation Blocks, Rejection Blocks
+//    • Fair Value Gaps + Inverse FVGs
+//    • Displacement candles
+//
+//  Part 2 keeps a slim copy of the structure-detection block it needs (for
+//  the CHoCH used in composite signals and for anchoring the PD / OTE range).
+//  Add BOTH indicators to the chart for the full v21 suite.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  GLOBAL DISPLAY
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpDISP = "Display & Readability"
+extendBoxes  = input.bool(true,  "Extend zones to right",      group=grpDISP)
+proxEnable   = input.bool(true,  "Hide far zones (proximity)", group=grpDISP)
+proxPct      = input.float(1.5,  "Max distance from price %",  group=grpDISP, minval=0.2, maxval=15.0, step=0.1)
+masterLabels = input.bool(true,  "Show zone labels",           group=grpDISP)
+labelDensity = input.string("Minimal", "Label density", group=grpDISP, options=["All","Important","Minimal"])
+labelStagger = input.int(8, "Right-edge label stagger (bars)", group=grpDISP, minval=0, maxval=50, tooltip="Spreads right-side labels horizontally so they stop stacking. 0 = legacy behavior (stacked).")
+
+extRight    = extendBoxes ? extend.right : extend.none
+candleRange = high - low
+bodyHigh    = math.max(open, close)
+bodyLow     = math.min(open, close)
+upperWick   = high  - bodyHigh
+lowerWick   = bodyLow - low
+atr14       = ta.atr(14)
+
+
+lblAllowSweep  = masterLabels
+lblAllowVI     = masterLabels and labelDensity == "All"
+lblAllowHTF    = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowPD     = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+lblAllowLevels = masterLabels and (labelDensity == "All" or labelDensity == "Important")
+
+zoneNear(zH, zL) =>
+    if not proxEnable
+        true
+    else
+        midZ = math.avg(zH, zL)
+        close > 0 and math.abs(close - midZ) / close * 100.0 <= proxPct
+
+fadeColor(c) => color.new(c, 100)
+
+// Right-edge label x positions (staggered horizontally so they don't stack)
+// Slot 0: liquidity-level labels (1D-H, 7D-H, 30D-H)
+// Slot 1: AR labels
+// Slot 2: PD / OTE labels
+// Slot 3: HTF / level labels
+labelX(slot) => bar_index + slot * labelStagger
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MARKET STRUCTURE  (slim — only what Part 2 needs)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpMS = "Market Structure (slim)"
+useBodyBreak    = input.bool(false, "Body-break (else close-break)", group=grpMS)
+bosATRFilter    = input.float(0.25, "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05)
+internalLen     = input.int(5,      "Internal swing lookback",     group=grpMS, minval=2, maxval=30)
+externalLen     = input.int(25,     "External swing lookback",     group=grpMS, minval=10, maxval=100)
+bullStructColor = input.color(color.new(#26A69A, 0),  "Bullish structure", group=grpMS)
+bearStructColor = input.color(color.new(#EF5350, 0),  "Bearish structure", group=grpMS)
+
+intPH = ta.pivothigh(high, internalLen, internalLen)
+intPL = ta.pivotlow(low,   internalLen, internalLen)
+extPH = ta.pivothigh(high, externalLen, externalLen)
+extPL = ta.pivotlow(low,   externalLen, externalLen)
+
+var float intLastPH    = na
+var float intLastPL    = na
+var int   intLastPHBar = na
+var int   intLastPLBar = na
+var float extLastPH    = na
+var float extLastPL    = na
+var int   extLastPHBar = na
+var int   extLastPLBar = na
+
+if not na(intPH)
+    intLastPH    := intPH
+    intLastPHBar := bar_index - internalLen
+if not na(intPL)
+    intLastPL    := intPL
+    intLastPLBar := bar_index - internalLen
+if not na(extPH)
+    extLastPH    := extPH
+    extLastPHBar := bar_index - externalLen
+if not na(extPL)
+    extLastPL    := extPL
+    extLastPLBar := bar_index - externalLen
+
+var float lastExtPH_val = na
+var float lastExtPL_val = na
+
+if not na(extPH)
+    lastExtPH_val := extPH
+if not na(extPL)
+    lastExtPL_val := extPL
+
+var int intTrend = 0
+var int extTrend = 0
+
+atrBuf = bosATRFilter > 0 and not na(atr14) ? bosATRFilter * atr14 : 0.0
+
+intBullBOS_raw = useBodyBreak ?
+   (not na(intLastPH) and bodyLow  > intLastPH + atrBuf and close[1] <= intLastPH) :
+   (not na(intLastPH) and close > intLastPH + atrBuf and close[1] <= intLastPH)
+intBearBOS_raw = useBodyBreak ?
+   (not na(intLastPL) and bodyHigh < intLastPL - atrBuf and close[1] >= intLastPL) :
+   (not na(intLastPL) and close < intLastPL - atrBuf and close[1] >= intLastPL)
+extBullBOS_raw = useBodyBreak ?
+   (not na(extLastPH) and bodyLow  > extLastPH + atrBuf and close[1] <= extLastPH) :
+   (not na(extLastPH) and close > extLastPH + atrBuf and close[1] <= extLastPH)
+extBearBOS_raw = useBodyBreak ?
+   (not na(extLastPL) and bodyHigh < extLastPL - atrBuf and close[1] >= extLastPL) :
+   (not na(extLastPL) and close < extLastPL - atrBuf and close[1] >= extLastPL)
+
+
+intBullBOS = false
+intBullCHoCH = false
+intBearBOS = false
+intBearCHoCH = false
+if intBullBOS_raw
+    if intTrend == -1
+        intBullCHoCH := true
+    else
+        intBullBOS := true
+    intTrend := 1
+    intLastPH := na
+    intLastPHBar := na
+if intBearBOS_raw
+    if intTrend == 1
+        intBearCHoCH := true
+    else
+        intBearBOS := true
+    intTrend := -1
+    intLastPL := na
+    intLastPLBar := na
+
+extBullBOS = false
+extBullCHoCH = false
+extBearBOS = false
+extBearCHoCH = false
+if extBullBOS_raw
+    if extTrend == -1
+        extBullCHoCH := true
+    else
+        extBullBOS := true
+    extTrend := 1
+    extLastPH := na
+    extLastPHBar := na
+if extBearBOS_raw
+    if extTrend == 1
+        extBearCHoCH := true
+    else
+        extBearBOS := true
+    extTrend := -1
+    extLastPL := na
+    extLastPLBar := na
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  VOLUME IMBALANCES  (boxes default OFF; booleans always exposed)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpVI = "Volume Imbalances"
+showVIBox = input.bool(false, "Show VI boxes (cluttery)", group=grpVI)
+viMaxBoxes= input.int(4,      "Max VIs per side",         group=grpVI, minval=1, maxval=12)
+viBullColor= input.color(color.new(#80DEEA, 75), "Bull VI", group=grpVI)
+viBearColor= input.color(color.new(#FFAB91, 75), "Bear VI", group=grpVI)
+
+isBullVI = close[1] > open[1] and close > open and open > close[1] and (open - close[1]) > 0
+isBearVI = close[1] < open[1] and close < open and open < close[1] and (close[1] - open) > 0
+
+var viBullBoxes = array.new_box()
+var viBullTop   = array.new_float()
+var viBullBot   = array.new_float()
+var viBullDead  = array.new_bool()
+var viBearBoxes = array.new_box()
+var viBearTop   = array.new_float()
+var viBearBot   = array.new_float()
+var viBearDead  = array.new_bool()
+
+
+if showVIBox and isBullVI
+    while array.size(viBullBoxes) >= viMaxBoxes
+        box.delete(array.shift(viBullBoxes))
+        array.shift(viBullTop)
+        array.shift(viBullBot)
+        array.shift(viBullDead)
+    bx = box.new(bar_index - 1, open, bar_index, close[1], bgcolor=viBullColor, border_color=viBullColor, extend=extRight)
+    array.push(viBullBoxes, bx)
+    array.push(viBullTop, open)
+    array.push(viBullBot, close[1])
+    array.push(viBullDead, false)
+if showVIBox and isBearVI
+    while array.size(viBearBoxes) >= viMaxBoxes
+        box.delete(array.shift(viBearBoxes))
+        array.shift(viBearTop)
+        array.shift(viBearBot)
+        array.shift(viBearDead)
+    bx = box.new(bar_index - 1, close[1], bar_index, open, bgcolor=viBearColor, border_color=viBearColor, extend=extRight)
+    array.push(viBearBoxes, bx)
+    array.push(viBearTop, close[1])
+    array.push(viBearBot, open)
+    array.push(viBearDead, false)
+
+if showVIBox and array.size(viBullBoxes) > 0
+    idxR = array.size(viBullBoxes) - 1
+    while idxR >= 0
+        if not array.get(viBullDead, idxR)
+            if close < array.get(viBullBot, idxR)
+                box.delete(array.get(viBullBoxes, idxR))
+                array.set(viBullDead, idxR, true)
+        idxR -= 1
+if showVIBox and array.size(viBearBoxes) > 0
+    idxR = array.size(viBearBoxes) - 1
+    while idxR >= 0
+        if not array.get(viBearDead, idxR)
+            if close > array.get(viBearTop, idxR)
+                box.delete(array.get(viBearBoxes, idxR))
+                array.set(viBearDead, idxR, true)
+        idxR -= 1
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY  (EQH / EQL + sweeps)  — flexible tolerance (Percent / Ticks / ATR)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpLIQ = "Liquidity (EQH/EQL)"
+showLIQ      = input.bool(true,  "Show EQH/EQL",            group=grpLIQ)
+liqLookback  = input.int(10,     "Pivot lookback",          group=grpLIQ, minval=3, maxval=50)
+liqTolMode   = input.string("Percent", "Tolerance mode", group=grpLIQ, options=["Percent","Ticks","ATR"], tooltip="Percent: % of price (suits FX/index)\nTicks: number of mintick units (suits any asset)\nATR: fraction of ATR(14)")
+liqTolerance = input.float(0.05, "Tolerance (Percent mode)", group=grpLIQ, minval=0.001, maxval=2.0, step=0.005)
+liqTolTicks  = input.int(50,     "Tolerance (Ticks mode)",  group=grpLIQ, minval=1, maxval=10000)
+liqTolATR    = input.float(0.10, "Tolerance (ATR mode)",    group=grpLIQ, minval=0.01, maxval=2.0, step=0.01)
+liqMinTouch  = input.int(2,      "Min pivots to confirm",   group=grpLIQ, minval=2, maxval=5)
+liqMaxLines  = input.int(3,      "Max levels per side",     group=grpLIQ, minval=1, maxval=12)
+liqEQHColor  = input.color(color.new(#FF5252, 50), "EQH (BSL)", group=grpLIQ)
+liqEQLColor  = input.color(color.new(#69F0AE, 50), "EQL (SSL)", group=grpLIQ)
+liqSweptHide = input.bool(false, "Hide swept lines",        group=grpLIQ)
+showSweepLbl = input.bool(true,  "Show sweep markers",      group=grpLIQ)
+showBSLSSLLbl= input.bool(true,  "Tag BSL / SSL",           group=grpLIQ)
+
+// Resolve tolerance to absolute price units, asset-aware
+liqTolAbs(price) =>
+    switch liqTolMode
+        "Ticks"   => liqTolTicks * syminfo.mintick
+        "ATR"     => not na(atr14) ? liqTolATR * atr14 : price * liqTolerance / 100.0
+        =>           price * liqTolerance / 100.0
+
+liqPH = ta.pivothigh(high, liqLookback, liqLookback)
+liqPL = ta.pivotlow(low,   liqLookback, liqLookback)
+
+var pendHighLvl = array.new_float()
+var pendHighBar = array.new_int()
+var pendLowLvl  = array.new_float()
+var pendLowBar  = array.new_int()
+var liqHighLines  = array.new_line()
+var liqHighLevels = array.new_float()
+var liqHighSwept  = array.new_bool()
+var liqLowLines   = array.new_line()
+var liqLowLevels  = array.new_float()
+var liqLowSwept   = array.new_bool()
+var int PEND_KEEP = 12
+
+if showLIQ and not na(liqPH)
+    if array.size(pendHighLvl) >= PEND_KEEP
+        array.shift(pendHighLvl)
+        array.shift(pendHighBar)
+    array.push(pendHighLvl, liqPH)
+    array.push(pendHighBar, bar_index - liqLookback)
+    tolVal = liqTolAbs(liqPH)
+    matched = false
+    if array.size(liqHighLevels) > 0
+        for i = 0 to array.size(liqHighLevels) - 1
+            if not array.get(liqHighSwept, i)
+                if math.abs(array.get(liqHighLevels, i) - liqPH) <= tolVal
+                    matched := true
+                    break
+
+    cluster = 0
+    earliestBar = bar_index
+    if array.size(pendHighLvl) > 0
+        for i = 0 to array.size(pendHighLvl) - 1
+            if math.abs(array.get(pendHighLvl, i) - liqPH) <= tolVal
+                cluster += 1
+                pb = array.get(pendHighBar, i)
+                if pb < earliestBar
+                    earliestBar := pb
+    if not matched and cluster >= liqMinTouch
+        while array.size(liqHighLevels) >= liqMaxLines
+            line.delete(array.shift(liqHighLines))
+            array.shift(liqHighLevels)
+            array.shift(liqHighSwept)
+        l = line.new(earliestBar, liqPH, bar_index, liqPH, color=liqEQHColor, style=line.style_dashed, width=1, extend=extend.right)
+        array.push(liqHighLines, l)
+        array.push(liqHighLevels, liqPH)
+        array.push(liqHighSwept, false)
+        if lblAllowPD
+            tag = showBSLSSLLbl ? "BSL" : "EQH"
+            label.new(bar_index - liqLookback, liqPH, tag, style=label.style_label_down, color=liqEQHColor, textcolor=color.white, size=size.tiny)
+
+if showLIQ and not na(liqPL)
+    if array.size(pendLowLvl) >= PEND_KEEP
+        array.shift(pendLowLvl)
+        array.shift(pendLowBar)
+    array.push(pendLowLvl, liqPL)
+    array.push(pendLowBar, bar_index - liqLookback)
+    tolVal = liqTolAbs(liqPL)
+    matched = false
+    if array.size(liqLowLevels) > 0
+        for i = 0 to array.size(liqLowLevels) - 1
+            if not array.get(liqLowSwept, i)
+                if math.abs(array.get(liqLowLevels, i) - liqPL) <= tolVal
+                    matched := true
+                    break
+    cluster = 0
+    earliestBar = bar_index
+    if array.size(pendLowLvl) > 0
+        for i = 0 to array.size(pendLowLvl) - 1
+            if math.abs(array.get(pendLowLvl, i) - liqPL) <= tolVal
+                cluster += 1
+                pb = array.get(pendLowBar, i)
+                if pb < earliestBar
+                    earliestBar := pb
+
+    if not matched and cluster >= liqMinTouch
+        while array.size(liqLowLevels) >= liqMaxLines
+            line.delete(array.shift(liqLowLines))
+            array.shift(liqLowLevels)
+            array.shift(liqLowSwept)
+        l = line.new(earliestBar, liqPL, bar_index, liqPL, color=liqEQLColor, style=line.style_dashed, width=1, extend=extend.right)
+        array.push(liqLowLines, l)
+        array.push(liqLowLevels, liqPL)
+        array.push(liqLowSwept, false)
+        if lblAllowPD
+            tag = showBSLSSLLbl ? "SSL" : "EQL"
+            label.new(bar_index - liqLookback, liqPL, tag, style=label.style_label_up, color=liqEQLColor, textcolor=color.white, size=size.tiny)
+
+var int lastEQLSweepBar = -9999
+var int lastEQHSweepBar = -9999
+
+if showLIQ and array.size(liqHighLevels) > 0
+    for i = 0 to array.size(liqHighLevels) - 1
+        if not array.get(liqHighSwept, i)
+            if close > array.get(liqHighLevels, i)
+                if liqSweptHide
+                    line.delete(array.get(liqHighLines, i))
+                else
+                    line.set_color(array.get(liqHighLines, i), color.new(liqEQHColor, 85))
+                array.set(liqHighSwept, i, true)
+if showLIQ and array.size(liqLowLevels) > 0
+    for i = 0 to array.size(liqLowLevels) - 1
+        if not array.get(liqLowSwept, i)
+            if close < array.get(liqLowLevels, i)
+                if liqSweptHide
+                    line.delete(array.get(liqLowLines, i))
+                else
+                    line.set_color(array.get(liqLowLines, i), color.new(liqEQLColor, 85))
+                array.set(liqLowSwept, i, true)
+
+sweepEQL = false
+sweepEQH = false
+if showLIQ and array.size(liqLowLevels) > 0
+    for i = 0 to array.size(liqLowLevels) - 1
+        if not array.get(liqLowSwept, i)
+            lvl = array.get(liqLowLevels, i)
+            if low < lvl and close > lvl
+                lastEQLSweepBar := bar_index
+                array.set(liqLowSwept, i, true)
+                sweepEQL := true
+                if liqSweptHide
+                    line.delete(array.get(liqLowLines, i))
+                else
+                    line.set_color(array.get(liqLowLines, i), color.new(liqEQLColor, 75))
+
+if showLIQ and array.size(liqHighLevels) > 0
+    for i = 0 to array.size(liqHighLevels) - 1
+        if not array.get(liqHighSwept, i)
+            lvl = array.get(liqHighLevels, i)
+            if high > lvl and close < lvl
+                lastEQHSweepBar := bar_index
+                array.set(liqHighSwept, i, true)
+                sweepEQH := true
+                if liqSweptHide
+                    line.delete(array.get(liqHighLines, i))
+                else
+                    line.set_color(array.get(liqHighLines, i), color.new(liqEQHColor, 75))
+
+plotshape(showSweepLbl and sweepEQL, title="EQL sweep", location=location.belowbar, style=shape.triangleup,   color=liqEQLColor, size=size.tiny, text="x")
+plotshape(showSweepLbl and sweepEQH, title="EQH sweep", location=location.abovebar, style=shape.triangledown, color=liqEQHColor, size=size.tiny, text="x")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PREMIUM / DISCOUNT / OTE  (lines, not fills — much lighter on the eye)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpPD = "Premium / Discount / OTE"
+showPD       = input.bool(true,  "Show PD lines",      group=grpPD)
+showOTE      = input.bool(true,  "Show OTE 62/79 lines", group=grpPD)
+pdPremColor  = input.color(color.new(#F23645, 0),  "Premium edge", group=grpPD)
+pdDiscColor  = input.color(color.new(#26A69A, 0),  "Discount edge", group=grpPD)
+pdEqColor    = input.color(color.new(color.gray, 30), "Equilibrium", group=grpPD)
+pdOTEColor   = input.color(color.new(#FFD600, 0),  "OTE", group=grpPD)
+pdLineWidth  = input.int(2, "PD line width", group=grpPD, minval=1, maxval=4)
+
+hasSwingPair = not na(lastExtPH_val) and not na(lastExtPL_val)
+swingHi = hasSwingPair ? math.max(lastExtPH_val, lastExtPL_val) : ta.highest(high, 50)
+swingLo = hasSwingPair ? math.min(lastExtPH_val, lastExtPL_val) : ta.lowest(low, 50)
+swingMid = math.avg(swingHi, swingLo)
+swingBars = hasSwingPair ? math.max(1, bar_index - math.min(nz(extLastPHBar, bar_index), nz(extLastPLBar, bar_index))) : 50
+
+var line pdLineHi  = na
+var line pdLineLo  = na
+var line pdLineMid = na
+var line oteLine62 = na
+var line oteLine79 = na
+var label pdLblPrem = na
+var label pdLblDisc = na
+var label pdLblEq   = na
+var label oteLbl    = na
+
+if showPD and barstate.islast
+    if not na(pdLineHi)
+        line.delete(pdLineHi)
+    if not na(pdLineLo)
+        line.delete(pdLineLo)
+    if not na(pdLineMid)
+        line.delete(pdLineMid)
+    if not na(pdLblPrem)
+        label.delete(pdLblPrem)
+    if not na(pdLblDisc)
+        label.delete(pdLblDisc)
+    if not na(pdLblEq)
+        label.delete(pdLblEq)
+
+    leftBar = bar_index - swingBars
+    pdLineHi  := line.new(leftBar, swingHi, bar_index, swingHi, color=pdPremColor, style=line.style_solid, width=pdLineWidth, extend=extend.right)
+    pdLineLo  := line.new(leftBar, swingLo, bar_index, swingLo, color=pdDiscColor, style=line.style_solid, width=pdLineWidth, extend=extend.right)
+    pdLineMid := line.new(leftBar, swingMid, bar_index, swingMid, color=pdEqColor, style=line.style_dashed, width=1, extend=extend.right)
+    if lblAllowHTF
+        // Slot 2 (PD/OTE)
+        pdLblPrem := label.new(labelX(2), swingHi,  "PREM", style=label.style_label_left, color=color.new(pdPremColor, 60), textcolor=color.white, size=size.tiny)
+        pdLblDisc := label.new(labelX(2), swingLo,  "DISC", style=label.style_label_left, color=color.new(pdDiscColor, 60), textcolor=color.white, size=size.tiny)
+        pdLblEq   := label.new(labelX(2), swingMid, "EQ",   style=label.style_label_left, color=color.new(color.gray, 60),  textcolor=color.white, size=size.tiny)
+
+var float oteHi = na
+var float oteLo = na
+
+oteHi := na
+oteLo := na
+if showPD and showOTE
+    leg = swingHi - swingLo
+    if extTrend == 1 and not na(extLastPL)
+        oteHi := swingHi - leg * 0.62
+        oteLo := swingHi - leg * 0.79
+    else if extTrend == -1 and not na(extLastPH)
+        oteLo := swingLo + leg * 0.62
+        oteHi := swingLo + leg * 0.79
+
+if showPD and showOTE and barstate.islast
+    if not na(oteLine62)
+        line.delete(oteLine62)
+        oteLine62 := na
+    if not na(oteLine79)
+        line.delete(oteLine79)
+        oteLine79 := na
+    if not na(oteLbl)
+        label.delete(oteLbl)
+    if not na(oteHi) and not na(oteLo)
+        leftBar2 = bar_index - swingBars
+        oteLine62 := line.new(leftBar2, oteHi, bar_index, oteHi, color=pdOTEColor, style=line.style_dashed, width=1, extend=extend.right)
+        oteLine79 := line.new(leftBar2, oteLo, bar_index, oteLo, color=pdOTEColor, style=line.style_dashed, width=1, extend=extend.right)
+        if lblAllowHTF
+            oteLbl := label.new(labelX(2), math.avg(oteHi, oteLo), "OTE", style=label.style_label_left, color=color.new(pdOTEColor, 30), textcolor=color.black, size=size.tiny)
+
+isInOTE = not na(oteHi) and not na(oteLo) and close <= oteHi and close >= oteLo
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SESSIONS / KILLZONES  (lighter alphas)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpKZ = "Sessions / Killzones"
+showKZ        = input.bool(true,  "Show session highlights", group=grpKZ)
+sessTZ        = input.string("America/New_York", "Session timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
+asiaSess      = input.session("2000-0000", "Asia",     group=grpKZ, tooltip="Default times are NY-time. Adjust if timezone is changed.")
+londonSess    = input.session("0200-0500", "London",   group=grpKZ)
+nySess        = input.session("0930-1100", "New York", group=grpKZ)
+asiaColor     = input.color(color.new(#FFA726, 92), "Asia bg",   group=grpKZ)
+londonColor   = input.color(color.new(#26A69A, 92), "London bg", group=grpKZ)
+nyColor       = input.color(color.new(#42A5F5, 92), "NY bg",     group=grpKZ)
+
+tz = sessTZ == "exchange" ? syminfo.timezone : sessTZ
+inAsia   = not na(time(timeframe.period, asiaSess,   tz))
+inLondon = not na(time(timeframe.period, londonSess, tz))
+inNY     = not na(time(timeframe.period, nySess,     tz))
+
+bgcolor(showKZ and inAsia   ? asiaColor   : na, title="Asia")
+bgcolor(showKZ and inLondon ? londonColor : na, title="London")
+bgcolor(showKZ and inNY     ? nyColor     : na, title="New York")
+
+inAnyKZ_p2 = inLondon or inNY
+sessTxt = inLondon and inNY ? "LDN+NY" : inLondon ? "LONDON" : inNY ? "NY" : inAsia ? "ASIA" : "OFF"
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ASIAN RANGE  (LIVE — updates every bar during session)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpAR = "Asian Range"
+showAR     = input.bool(true,  "Show Asian Range",     group=grpAR)
+arShowBox  = input.bool(false, "Draw filled box (else lines only)", group=grpAR, tooltip="Lines-only mode is much lighter on the chart.")
+arColor    = input.color(color.new(#FFA726, 90), "Asian Range fill", group=grpAR)
+arLineCol  = input.color(color.new(#FFA726, 30), "Asian Range edges", group=grpAR)
+
+var float arHi = na
+var float arLo = na
+var int   arStart = na
+var box   arBox  = na
+var line  arHiLn = na
+var line  arLoLn = na
+var label arHiLbl = na
+var label arLoLbl = na
+
+newAsia = inAsia and not inAsia[1]
+
+if showAR and newAsia
+    arHi := high
+    arLo := low
+    arStart := bar_index
+    if not na(arBox)
+        box.delete(arBox)
+    if not na(arHiLn)
+        line.delete(arHiLn)
+    if not na(arLoLn)
+        line.delete(arLoLn)
+    if not na(arHiLbl)
+        label.delete(arHiLbl)
+    if not na(arLoLbl)
+        label.delete(arLoLbl)
+if showAR and inAsia
+    if na(arHi)
+        arHi := high
+        arLo := low
+        arStart := bar_index
+    arHi := math.max(arHi, high)
+    arLo := math.min(arLo, low)
+
+// LIVE redraw — every bar after Asia is initialized.  Box / lines extend
+// to the right edge so they keep growing as price moves outside the session.
+if showAR and not na(arHi) and not na(arStart)
+    if not na(arBox)
+        box.delete(arBox)
+    if not na(arHiLn)
+        line.delete(arHiLn)
+    if not na(arLoLn)
+        line.delete(arLoLn)
+    if arShowBox
+        arBox := box.new(arStart, arHi, bar_index, arLo, bgcolor=arColor, border_color=arLineCol, extend=extend.right)
+    arHiLn := line.new(arStart, arHi, bar_index, arHi, color=arLineCol, style=line.style_solid, width=1, extend=extend.right)
+    arLoLn := line.new(arStart, arLo, bar_index, arLo, color=arLineCol, style=line.style_solid, width=1, extend=extend.right)
+
+if showAR and not na(arHi) and barstate.islast and lblAllowLevels
+    if not na(arHiLbl)
+        label.delete(arHiLbl)
+    if not na(arLoLbl)
+        label.delete(arLoLbl)
+    // Slot 1 (AR labels)
+    arHiLbl := label.new(labelX(1), arHi, "AR-H", style=label.style_label_left, color=color.new(arLineCol, 30), textcolor=color.white, size=size.tiny)
+    arLoLbl := label.new(labelX(1), arLo, "AR-L", style=label.style_label_left, color=color.new(arLineCol, 30), textcolor=color.white, size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ICT MACRO TIME WINDOWS  (vertical-line markers + optional bg)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpMACRO = "ICT Macros"
+showMacro   = input.bool(true, "Show macro time windows", group=grpMACRO)
+macroBgOn   = input.bool(false, "Background highlight (heavy)", group=grpMACRO)
+macroLinesOn= input.bool(true,  "Vertical line at macro start", group=grpMACRO, tooltip="Recommended on 15m — bgcolor only covers 1–2 bars.")
+macroCol    = input.color(color.new(#FFEB3B, 95), "Macro bg",         group=grpMACRO)
+macroLineCol= input.color(color.new(#FFEB3B, 30), "Macro line color", group=grpMACRO)
+macro1 = input.session("0950-1010", "Macro 1 (NY AM)",   group=grpMACRO)
+macro2 = input.session("1050-1110", "Macro 2 (NY mid)",  group=grpMACRO)
+macro3 = input.session("1450-1510", "Macro 3 (NY PM)",   group=grpMACRO)
+
+inMacro1 = not na(time(timeframe.period, macro1, tz))
+inMacro2 = not na(time(timeframe.period, macro2, tz))
+inMacro3 = not na(time(timeframe.period, macro3, tz))
+inMacro = showMacro and (inMacro1 or inMacro2 or inMacro3)
+
+newMacro1 = inMacro1 and not inMacro1[1]
+newMacro2 = inMacro2 and not inMacro2[1]
+newMacro3 = inMacro3 and not inMacro3[1]
+
+bgcolor(showMacro and macroBgOn and inMacro ? macroCol : na, title="ICT Macro bg")
+
+if showMacro and macroLinesOn
+    if newMacro1
+        line.new(bar_index, low - 5 * syminfo.mintick, bar_index, high + 5 * syminfo.mintick, color=macroLineCol, style=line.style_dotted, width=1, extend=extend.both)
+    if newMacro2
+        line.new(bar_index, low - 5 * syminfo.mintick, bar_index, high + 5 * syminfo.mintick, color=macroLineCol, style=line.style_dotted, width=1, extend=extend.both)
+    if newMacro3
+        line.new(bar_index, low - 5 * syminfo.mintick, bar_index, high + 5 * syminfo.mintick, color=macroLineCol, style=line.style_dotted, width=1, extend=extend.both)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PERIODIC LEVELS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpLVL = "Periodic Levels"
+showOpens   = input.bool(true,  "Show D / W / M opens",       group=grpLVL)
+showPrevHL  = input.bool(true,  "Show previous D / W / M H&L", group=grpLVL)
+dOpenColor  = input.color(color.new(#FFEE58, 20), "Daily open",   group=grpLVL)
+wOpenColor  = input.color(color.new(#FFA726, 20), "Weekly open",  group=grpLVL)
+mOpenColor  = input.color(color.new(#EF5350, 20), "Monthly open", group=grpLVL)
+prevDColor  = input.color(color.new(#90CAF9, 30), "Previous D H/L", group=grpLVL)
+prevWColor  = input.color(color.new(#CE93D8, 30), "Previous W H/L", group=grpLVL)
+prevMColor  = input.color(color.new(#FFAB91, 30), "Previous M H/L", group=grpLVL)
+
+dOpen  = request.security(syminfo.tickerid, "D", open,  lookahead=barmerge.lookahead_off)
+wOpen  = request.security(syminfo.tickerid, "W", open,  lookahead=barmerge.lookahead_off)
+mOpen  = request.security(syminfo.tickerid, "M", open,  lookahead=barmerge.lookahead_off)
+prevDH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+prevDL = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
+prevWH = request.security(syminfo.tickerid, "W", high[1], lookahead=barmerge.lookahead_off)
+prevWL = request.security(syminfo.tickerid, "W", low[1],  lookahead=barmerge.lookahead_off)
+prevMH = request.security(syminfo.tickerid, "M", high[1], lookahead=barmerge.lookahead_off)
+prevML = request.security(syminfo.tickerid, "M", low[1],  lookahead=barmerge.lookahead_off)
+
+plot(showOpens  ? dOpen  : na, "Daily open",   color=dOpenColor, style=plot.style_linebr, linewidth=1)
+plot(showOpens  ? wOpen  : na, "Weekly open",  color=wOpenColor, style=plot.style_linebr, linewidth=1)
+plot(showOpens  ? mOpen  : na, "Monthly open", color=mOpenColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevDH : na, "PDH", color=prevDColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevDL : na, "PDL", color=prevDColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevWH : na, "PWH", color=prevWColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevWL : na, "PWL", color=prevWColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevMH : na, "PMH", color=prevMColor, style=plot.style_linebr, linewidth=1)
+plot(showPrevHL ? prevML : na, "PML", color=prevMColor, style=plot.style_linebr, linewidth=1)
+
+if barstate.islast and lblAllowLevels
+    if showOpens
+        // Slot 3
+        label.new(labelX(3), dOpen, "dO", style=label.style_label_left, color=color.new(dOpenColor, 30), textcolor=color.black, size=size.tiny)
+        label.new(labelX(3), wOpen, "wO", style=label.style_label_left, color=color.new(wOpenColor, 30), textcolor=color.black, size=size.tiny)
+        label.new(labelX(3), mOpen, "mO", style=label.style_label_left, color=color.new(mOpenColor, 30), textcolor=color.white, size=size.tiny)
+    if showPrevHL
+        label.new(labelX(3), prevDH, "PDH", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
+        label.new(labelX(3), prevDL, "PDL", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
+        label.new(labelX(3), prevWH, "PWH", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
+        label.new(labelX(3), prevWL, "PWL", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
+        label.new(labelX(3), prevMH, "PMH", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
+        label.new(labelX(3), prevML, "PML", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY LEVELS  (1D / 7D / 30D rolling H/L) — redraw only on value change
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpLIQL = "Liquidity Levels"
+showDayLiq   = input.bool(true,  "Show 1-day liquidity (H+L)",  group=grpLIQL)
+showWeekLiq  = input.bool(true,  "Show 7-day liquidity (H+L)",  group=grpLIQL)
+showMonthLiq = input.bool(true,  "Show 30-day liquidity (H+L)", group=grpLIQL)
+liqStyleIn   = input.string("Solid", "Line style", group=grpLIQL, options=["Solid","Dashed","Dotted"])
+liqWidth     = input.int(2,      "Line width",  group=grpLIQL, minval=1, maxval=4)
+liqExtend    = input.bool(true,  "Extend to right", group=grpLIQL)
+liqLabels    = input.bool(false, "Show price labels", group=grpLIQL, tooltip="Off by default in v21 — the lines themselves are sufficient.")
+liqShowMid   = input.bool(false, "Show midline of each range", group=grpLIQL)
+dayHiCol     = input.color(color.new(#FFB300, 0), "1D High",  group=grpLIQL)
+dayLoCol     = input.color(color.new(#FFB300, 0), "1D Low",   group=grpLIQL)
+weekHiCol    = input.color(color.new(#1E88E5, 0), "7D High",  group=grpLIQL)
+weekLoCol    = input.color(color.new(#1E88E5, 0), "7D Low",   group=grpLIQL)
+monHiCol     = input.color(color.new(#8E24AA, 0), "30D High", group=grpLIQL)
+monLoCol     = input.color(color.new(#8E24AA, 0), "30D Low",  group=grpLIQL)
+liqMidCol    = input.color(color.new(color.gray, 50), "Midlines", group=grpLIQL)
+
+liqStyle = liqStyleIn == "Dashed" ? line.style_dashed : liqStyleIn == "Dotted" ? line.style_dotted : line.style_solid
+liqExt   = liqExtend ? extend.right : extend.none
+
+liq1Hi  = request.security(syminfo.tickerid, "D", high[1],                 lookahead=barmerge.lookahead_off)
+liq1Lo  = request.security(syminfo.tickerid, "D", low[1],                  lookahead=barmerge.lookahead_off)
+liq7Hi  = request.security(syminfo.tickerid, "D", ta.highest(high[1], 7),  lookahead=barmerge.lookahead_off)
+liq7Lo  = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   7),  lookahead=barmerge.lookahead_off)
+liq30Hi = request.security(syminfo.tickerid, "D", ta.highest(high[1], 30), lookahead=barmerge.lookahead_off)
+liq30Lo = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   30), lookahead=barmerge.lookahead_off)
+
+var line ln1Hi  = na
+var line ln1Lo  = na
+var line ln1Mid = na
+var line ln7Hi  = na
+var line ln7Lo  = na
+var line ln7Mid = na
+var line ln30Hi = na
+var line ln30Lo = na
+var line ln30Mid= na
+var label lb1Hi  = na
+var label lb1Lo  = na
+var label lb7Hi  = na
+var label lb7Lo  = na
+var label lb30Hi = na
+var label lb30Lo = na
+
+
+var float prv1Hi = na
+var float prv1Lo = na
+var float prv7Hi = na
+var float prv7Lo = na
+var float prv30Hi = na
+var float prv30Lo = na
+
+liq1Changed  = liq1Hi  != prv1Hi  or liq1Lo  != prv1Lo
+liq7Changed  = liq7Hi  != prv7Hi  or liq7Lo  != prv7Lo
+liq30Changed = liq30Hi != prv30Hi or liq30Lo != prv30Lo
+
+var bool liqFirstDraw = true
+
+if barstate.islast and (liqFirstDraw or liq1Changed or liq7Changed or liq30Changed)
+    leftBar = math.max(0, bar_index - 500)
+
+    if liqFirstDraw or liq1Changed
+        if not na(ln1Hi)
+            line.delete(ln1Hi)
+        if not na(ln1Lo)
+            line.delete(ln1Lo)
+        if not na(ln1Mid)
+            line.delete(ln1Mid)
+        if not na(lb1Hi)
+            label.delete(lb1Hi)
+        if not na(lb1Lo)
+            label.delete(lb1Lo)
+        if showDayLiq and not na(liq1Hi) and not na(liq1Lo)
+            ln1Hi := line.new(leftBar, liq1Hi, bar_index, liq1Hi, color=dayHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            ln1Lo := line.new(leftBar, liq1Lo, bar_index, liq1Lo, color=dayLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            if liqShowMid
+                mid = math.avg(liq1Hi, liq1Lo)
+                ln1Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+            if liqLabels
+                // Slot 0
+                lb1Hi := label.new(labelX(0), liq1Hi, "1D-H " + str.tostring(liq1Hi, format.mintick), style=label.style_label_left, color=color.new(dayHiCol, 20), textcolor=color.white, size=size.small)
+                lb1Lo := label.new(labelX(0), liq1Lo, "1D-L " + str.tostring(liq1Lo, format.mintick), style=label.style_label_left, color=color.new(dayLoCol, 20), textcolor=color.white, size=size.small)
+        prv1Hi := liq1Hi
+        prv1Lo := liq1Lo
+
+
+    if liqFirstDraw or liq7Changed
+        if not na(ln7Hi)
+            line.delete(ln7Hi)
+        if not na(ln7Lo)
+            line.delete(ln7Lo)
+        if not na(ln7Mid)
+            line.delete(ln7Mid)
+        if not na(lb7Hi)
+            label.delete(lb7Hi)
+        if not na(lb7Lo)
+            label.delete(lb7Lo)
+        if showWeekLiq and not na(liq7Hi) and not na(liq7Lo)
+            ln7Hi := line.new(leftBar, liq7Hi, bar_index, liq7Hi, color=weekHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            ln7Lo := line.new(leftBar, liq7Lo, bar_index, liq7Lo, color=weekLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            if liqShowMid
+                mid = math.avg(liq7Hi, liq7Lo)
+                ln7Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+            if liqLabels
+                lb7Hi := label.new(labelX(0), liq7Hi, "7D-H " + str.tostring(liq7Hi, format.mintick), style=label.style_label_left, color=color.new(weekHiCol, 20), textcolor=color.white, size=size.small)
+                lb7Lo := label.new(labelX(0), liq7Lo, "7D-L " + str.tostring(liq7Lo, format.mintick), style=label.style_label_left, color=color.new(weekLoCol, 20), textcolor=color.white, size=size.small)
+        prv7Hi := liq7Hi
+        prv7Lo := liq7Lo
+
+    if liqFirstDraw or liq30Changed
+        if not na(ln30Hi)
+            line.delete(ln30Hi)
+        if not na(ln30Lo)
+            line.delete(ln30Lo)
+        if not na(ln30Mid)
+            line.delete(ln30Mid)
+        if not na(lb30Hi)
+            label.delete(lb30Hi)
+        if not na(lb30Lo)
+            label.delete(lb30Lo)
+        if showMonthLiq and not na(liq30Hi) and not na(liq30Lo)
+            ln30Hi := line.new(leftBar, liq30Hi, bar_index, liq30Hi, color=monHiCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            ln30Lo := line.new(leftBar, liq30Lo, bar_index, liq30Lo, color=monLoCol, style=liqStyle, width=liqWidth, extend=liqExt)
+            if liqShowMid
+                mid = math.avg(liq30Hi, liq30Lo)
+                ln30Mid := line.new(leftBar, mid, bar_index, mid, color=liqMidCol, style=line.style_dotted, width=1, extend=liqExt)
+            if liqLabels
+                lb30Hi := label.new(labelX(0), liq30Hi, "30D-H " + str.tostring(liq30Hi, format.mintick), style=label.style_label_left, color=color.new(monHiCol, 20), textcolor=color.white, size=size.small)
+                lb30Lo := label.new(labelX(0), liq30Lo, "30D-L " + str.tostring(liq30Lo, format.mintick), style=label.style_label_left, color=color.new(monLoCol, 20), textcolor=color.white, size=size.small)
+        prv30Hi := liq30Hi
+        prv30Lo := liq30Lo
+
+    liqFirstDraw := false
+
+
+// Liquidity sweep alerts
+liqSweep1H  = showDayLiq   and not na(liq1Hi)  and high > liq1Hi  and close < liq1Hi
+liqSweep1L  = showDayLiq   and not na(liq1Lo)  and low  < liq1Lo  and close > liq1Lo
+liqSweep7H  = showWeekLiq  and not na(liq7Hi)  and high > liq7Hi  and close < liq7Hi
+liqSweep7L  = showWeekLiq  and not na(liq7Lo)  and low  < liq7Lo  and close > liq7Lo
+liqSweep30H = showMonthLiq and not na(liq30Hi) and high > liq30Hi and close < liq30Hi
+liqSweep30L = showMonthLiq and not na(liq30Lo) and low  < liq30Lo and close > liq30Lo
+
+alertcondition(liqSweep1H,  "1D high swept",  "1-day liquidity high swept")
+alertcondition(liqSweep1L,  "1D low swept",   "1-day liquidity low swept")
+alertcondition(liqSweep7H,  "7D high swept",  "7-day liquidity high swept")
+alertcondition(liqSweep7L,  "7D low swept",   "7-day liquidity low swept")
+alertcondition(liqSweep30H, "30D high swept", "30-day liquidity high swept")
+alertcondition(liqSweep30L, "30D low swept",  "30-day liquidity low swept")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF ORDER BLOCKS  (with confluence scoring)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpHTFOB = "HTF Order Blocks"
+showHTFOB    = input.bool(true,  "Show HTF OBs",        group=grpHTFOB)
+htfOBTF      = input.timeframe("240", "HTF timeframe",  group=grpHTFOB)
+htfOBLen     = input.int(5,      "HTF swing lookback",  group=grpHTFOB, minval=2, maxval=20)
+htfOBMax     = input.int(2,      "Max HTF OBs / side",  group=grpHTFOB, minval=1, maxval=5)
+htfOBBullCol = input.color(color.new(#1565C0, 60), "HTF Bull OB", group=grpHTFOB)
+htfOBBearCol = input.color(color.new(#B71C1C, 60), "HTF Bear OB", group=grpHTFOB)
+
+detectHTFOB(int len) =>
+    pivH = ta.pivothigh(high, len, len)
+    pivL = ta.pivotlow(low,   len, len)
+
+    var float lastPHv = na
+    var float lastPLv = na
+    if not na(pivH)
+        lastPHv := pivH
+    if not na(pivL)
+        lastPLv := pivL
+
+    bullBOSf = not na(lastPHv) and close > lastPHv and close[1] <= lastPHv
+    bearBOSf = not na(lastPLv) and close < lastPLv and close[1] >= lastPLv
+
+
+    bullOBHi = float(na)
+    bullOBLo = float(na)
+    bullOBT  = int(na)
+    bearOBHi = float(na)
+    bearOBLo = float(na)
+    bearOBT  = int(na)
+
+    if bullBOSf
+        for k = 1 to math.min(len * 2, 50)
+            if close[k] < open[k]
+                bullOBHi := high[k]
+                bullOBLo := low[k]
+                bullOBT  := time[k]
+                break
+        lastPHv := na
+    if bearBOSf
+        for k = 1 to math.min(len * 2, 50)
+            if close[k] > open[k]
+                bearOBHi := high[k]
+                bearOBLo := low[k]
+                bearOBT  := time[k]
+                break
+        lastPLv := na
+
+    [bullBOSf, bullOBHi, bullOBLo, bullOBT, bearBOSf, bearOBHi, bearOBLo, bearOBT]
+
+[htfBullBOS, htfBOBHi, htfBOBLo, htfBOBT, htfBearBOS, htfBeOBHi, htfBeOBLo, htfBeOBT] = request.security(syminfo.tickerid, htfOBTF, detectHTFOB(htfOBLen), lookahead=barmerge.lookahead_off)
+
+var htfOBBullBoxes = array.new_box()
+var htfOBBullHi    = array.new_float()
+var htfOBBullLo    = array.new_float()
+var htfOBBullMitig = array.new_bool()
+var htfOBBullScore = array.new_int()
+var htfOBBearBoxes = array.new_box()
+var htfOBBearHi    = array.new_float()
+var htfOBBearLo    = array.new_float()
+var htfOBBearMitig = array.new_bool()
+var htfOBBearScore = array.new_int()
+
+chartBelowHTF = timeframe.in_seconds() < timeframe.in_seconds(htfOBTF)
+
+newHTFBullBOS = htfBullBOS and not nz(htfBullBOS[1], false) and not na(htfBOBT)
+newHTFBearBOS = htfBearBOS and not nz(htfBearBOS[1], false) and not na(htfBeOBT)
+
+// Helper — count an OB's confluence score
+//   +1 in OTE, +1 in current killzone, +1 near (≤0.25%) any EQH/EQL
+htfOBNearLiquidity(price) =>
+    found = false
+    threshold = price * 0.0025
+    if array.size(liqHighLevels) > 0
+        for i = 0 to array.size(liqHighLevels) - 1
+            if math.abs(array.get(liqHighLevels, i) - price) <= threshold
+                found := true
+                break
+    if not found and array.size(liqLowLevels) > 0
+        for i = 0 to array.size(liqLowLevels) - 1
+            if math.abs(array.get(liqLowLevels, i) - price) <= threshold
+                found := true
+                break
+    found
+
+if showHTFOB and chartBelowHTF and newHTFBullBOS
+    while array.size(htfOBBullBoxes) >= htfOBMax
+        box.delete(array.shift(htfOBBullBoxes))
+        array.shift(htfOBBullHi)
+        array.shift(htfOBBullLo)
+        array.shift(htfOBBullMitig)
+        array.shift(htfOBBullScore)
+    score = 0
+    if isInOTE
+        score += 1
+    if inAnyKZ_p2
+        score += 1
+    if htfOBNearLiquidity(math.avg(htfBOBHi, htfBOBLo))
+        score += 1
+    b = box.new(htfBOBT, htfBOBHi, time, htfBOBLo, xloc=xloc.bar_time, bgcolor=htfOBBullCol, border_color=color.new(htfOBBullCol, 20), border_width=2, extend=extend.right)
+    array.push(htfOBBullBoxes, b)
+    array.push(htfOBBullHi, htfBOBHi)
+    array.push(htfOBBullLo, htfBOBLo)
+    array.push(htfOBBullMitig, false)
+    array.push(htfOBBullScore, score)
+    if lblAllowHTF
+        scoreTxt = score > 0 ? " ★" + str.tostring(score) : ""
+        label.new(time, htfBOBHi, htfOBTF + "OB" + scoreTxt, xloc=xloc.bar_time, style=label.style_label_down, color=color.new(htfOBBullCol, 20), textcolor=color.white, size=size.tiny)
+
+if showHTFOB and chartBelowHTF and newHTFBearBOS
+    while array.size(htfOBBearBoxes) >= htfOBMax
+        box.delete(array.shift(htfOBBearBoxes))
+        array.shift(htfOBBearHi)
+        array.shift(htfOBBearLo)
+        array.shift(htfOBBearMitig)
+        array.shift(htfOBBearScore)
+    score = 0
+    if isInOTE
+        score += 1
+    if inAnyKZ_p2
+        score += 1
+    if htfOBNearLiquidity(math.avg(htfBeOBHi, htfBeOBLo))
+        score += 1
+    b = box.new(htfBeOBT, htfBeOBHi, time, htfBeOBLo, xloc=xloc.bar_time, bgcolor=htfOBBearCol, border_color=color.new(htfOBBearCol, 20), border_width=2, extend=extend.right)
+    array.push(htfOBBearBoxes, b)
+    array.push(htfOBBearHi, htfBeOBHi)
+    array.push(htfOBBearLo, htfBeOBLo)
+    array.push(htfOBBearMitig, false)
+    array.push(htfOBBearScore, score)
+    if lblAllowHTF
+        scoreTxt = score > 0 ? " ★" + str.tostring(score) : ""
+        label.new(time, htfBeOBHi, htfOBTF + "OB" + scoreTxt, xloc=xloc.bar_time, style=label.style_label_down, color=color.new(htfOBBearCol, 20), textcolor=color.white, size=size.tiny)
+
+if showHTFOB and chartBelowHTF
+    if array.size(htfOBBullBoxes) > 0
+        for i = 0 to array.size(htfOBBullBoxes) - 1
+            if not array.get(htfOBBullMitig, i)
+                if close < array.get(htfOBBullLo, i)
+                    box.delete(array.get(htfOBBullBoxes, i))
+                    array.set(htfOBBullMitig, i, true)
+    if array.size(htfOBBearBoxes) > 0
+        for i = 0 to array.size(htfOBBearBoxes) - 1
+            if not array.get(htfOBBearMitig, i)
+                if close > array.get(htfOBBearHi, i)
+                    box.delete(array.get(htfOBBearBoxes, i))
+                    array.set(htfOBBearMitig, i, true)
+
+
+inHTFBullOB = false
+inHTFBearOB = false
+maxHTFBullScore = 0
+maxHTFBearScore = 0
+if showHTFOB and array.size(htfOBBullBoxes) > 0
+    for i = 0 to array.size(htfOBBullBoxes) - 1
+        if not array.get(htfOBBullMitig, i)
+            if close >= array.get(htfOBBullLo, i) and close <= array.get(htfOBBullHi, i)
+                inHTFBullOB := true
+                s = array.get(htfOBBullScore, i)
+                if s > maxHTFBullScore
+                    maxHTFBullScore := s
+if showHTFOB and array.size(htfOBBearBoxes) > 0
+    for i = 0 to array.size(htfOBBearBoxes) - 1
+        if not array.get(htfOBBearMitig, i)
+            if close >= array.get(htfOBBearLo, i) and close <= array.get(htfOBBearHi, i)
+                inHTFBearOB := true
+                s = array.get(htfOBBearScore, i)
+                if s > maxHTFBearScore
+                    maxHTFBearScore := s
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF FAIR VALUE GAPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpHTFFVG = "HTF FVG"
+showHTFFVG = input.bool(true,  "Show HTF FVGs", group=grpHTFFVG)
+htfFVGTF   = input.timeframe("240", "HTF FVG timeframe", group=grpHTFFVG)
+htfFVGBull = input.color(color.new(#00C853, 75), "HTF Bull FVG", group=grpHTFFVG)
+htfFVGBear = input.color(color.new(#FF1744, 75), "HTF Bear FVG", group=grpHTFFVG)
+
+[htfH2, htfL2, htfH0, htfL0] = request.security(syminfo.tickerid, htfFVGTF, [high[2], low[2], high, low], lookahead=barmerge.lookahead_off)
+htfBullFVG = not na(htfH2) and not na(htfL0) and (htfL0 - htfH2) > 0
+htfBearFVG = not na(htfL2) and not na(htfH0) and (htfL2 - htfH0) > 0
+inHTFBullFVG = showHTFFVG and htfBullFVG and close >= htfH2 and close <= htfL0
+inHTFBearFVG = showHTFFVG and htfBearFVG and close >= htfH0 and close <= htfL2
+
+bgcolor(showHTFFVG and inHTFBullFVG ? color.new(htfFVGBull, 92) : na, title="HTF Bull FVG bg")
+bgcolor(showHTFFVG and inHTFBearFVG ? color.new(htfFVGBear, 92) : na, title="HTF Bear FVG bg")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HTF PREMIUM / DISCOUNT  (proper HTF range, not LTF mid)
+// ══════════════════════════════════════════════════════════════════════════════
+
+htfRangeHi = request.security(syminfo.tickerid, htfOBTF, ta.highest(high[1], 20), lookahead=barmerge.lookahead_off)
+htfRangeLo = request.security(syminfo.tickerid, htfOBTF, ta.lowest(low[1],   20), lookahead=barmerge.lookahead_off)
+htfMid     = math.avg(htfRangeHi, htfRangeLo)
+inHTFDiscount = not na(htfMid) and close < htfMid
+inHTFPremium  = not na(htfMid) and close > htfMid
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EMAs
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpEMA = "EMAs"
+showEma1   = input.bool(true,  "Show EMA 1",      group=grpEMA)
+ema1Len    = input.int(50,     "EMA 1 length",    group=grpEMA, minval=2, maxval=400)
+ema1Col    = input.color(color.new(#42A5F5, 0), "EMA 1 color", group=grpEMA)
+showEma2   = input.bool(true,  "Show EMA 2",      group=grpEMA)
+ema2Len    = input.int(200,    "EMA 2 length",    group=grpEMA, minval=2, maxval=400)
+ema2Col    = input.color(color.new(#FFB300, 0), "EMA 2 color", group=grpEMA)
+showEma3   = input.bool(true,  "Show EMA 3",      group=grpEMA)
+ema3Len    = input.int(21,     "EMA 3 length",    group=grpEMA, minval=2, maxval=400)
+ema3Col    = input.color(color.new(#E040FB, 0), "EMA 3 color", group=grpEMA)
+ema3Src    = input.source(close, "EMA 3 source",  group=grpEMA)
+emaWidth   = input.int(2,      "Line width",      group=grpEMA, minval=1, maxval=4)
+emaCrossLbl= input.bool(true,  "Mark EMA1/EMA2 crosses", group=grpEMA)
+
+ema1Val = ta.ema(close, ema1Len)
+ema2Val = ta.ema(close, ema2Len)
+ema3Val = ta.ema(ema3Src, ema3Len)
+
+plot(showEma1 ? ema1Val : na, "EMA 1", color=ema1Col, linewidth=emaWidth)
+plot(showEma2 ? ema2Val : na, "EMA 2", color=ema2Col, linewidth=emaWidth)
+plot(showEma3 ? ema3Val : na, "EMA 3", color=ema3Col, linewidth=emaWidth)
+
+emaBullCross = showEma1 and showEma2 and ta.crossover(ema1Val, ema2Val)
+emaBearCross = showEma1 and showEma2 and ta.crossunder(ema1Val, ema2Val)
+
+
+plotshape(emaCrossLbl and emaBullCross, title="EMA bull cross", location=location.belowbar, style=shape.circle, color=color.new(#00C853, 0), size=size.tiny, text="X")
+plotshape(emaCrossLbl and emaBearCross, title="EMA bear cross", location=location.abovebar, style=shape.circle, color=color.new(#F23645, 0), size=size.tiny, text="X")
+
+alertcondition(emaBullCross, "EMA bull cross", "Fast EMA crossed above slow EMA")
+alertcondition(emaBearCross, "EMA bear cross", "Fast EMA crossed below slow EMA")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COMPOSITE SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpSIG = "Composite Signals"
+sigLookback = input.int(10, "Sweep -> CHoCH lookback (bars)", group=grpSIG, minval=2, maxval=50)
+showRevMark = input.bool(true, "Show reversal markers", group=grpSIG)
+useHTFForSetup = input.bool(true, "Use HTF discount/premium for A+ setup (recommended)", group=grpSIG)
+
+recentEQLSweep = (bar_index - lastEQLSweepBar) <= sigLookback
+recentEQHSweep = (bar_index - lastEQHSweepBar) <= sigLookback
+
+bullReversal = recentEQLSweep and intBullCHoCH
+bearReversal = recentEQHSweep and intBearCHoCH
+
+plotshape(showRevMark and bullReversal, title="Bull reversal (sweep+CHoCH)", location=location.belowbar, style=shape.diamond, color=color.new(#00E676, 0), size=size.small, text="REV")
+plotshape(showRevMark and bearReversal, title="Bear reversal (sweep+CHoCH)", location=location.abovebar, style=shape.diamond, color=color.new(#FF5252, 0), size=size.small, text="REV")
+
+inLTFDiscount = close < swingMid
+inLTFPremium  = close > swingMid
+
+discountForSetup = useHTFForSetup ? inHTFDiscount : inLTFDiscount
+premiumForSetup  = useHTFForSetup ? inHTFPremium  : inLTFPremium
+
+bullSetupReady = bullReversal and discountForSetup and (inHTFBullOB or inHTFBullFVG or isInOTE)
+bearSetupReady = bearReversal and premiumForSetup  and (inHTFBearOB or inHTFBearFVG or isInOTE)
+
+plotshape(bullSetupReady, title="Bull setup ready", location=location.belowbar, style=shape.flag, color=color.new(#00C853, 0), size=size.normal, text="A+")
+plotshape(bearSetupReady, title="Bear setup ready", location=location.abovebar, style=shape.flag, color=color.new(#F23645, 0), size=size.normal, text="A+")
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COMPOSITE STRUCTURED ALERT
+//  One subscription, every event. Drop-in for webhook bots.
+//  Payload is a JSON-ish string built per bar that fires.
+// ══════════════════════════════════════════════════════════════════════════════
+
+buildAlertMsg(eventName) =>
+    '{' +
+      '"event":"'   + eventName + '",' +
+      '"symbol":"'  + syminfo.ticker + '",' +
+      '"tf":"'      + timeframe.period + '",' +
+      '"price":'    + str.tostring(close, format.mintick) + ',' +
+      '"htf_pd":"'  + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '",' +
+      '"in_ote":'   + (isInOTE ? "true" : "false") + ',' +
+      '"in_kz":"'   + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '",' +
+      '"htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) +
+    '}'
+
+if bullSetupReady
+    alert(buildAlertMsg("bull_setup"), alert.freq_once_per_bar_close)
+if bearSetupReady
+    alert(buildAlertMsg("bear_setup"), alert.freq_once_per_bar_close)
+if bullReversal and not bullSetupReady
+    alert(buildAlertMsg("bull_reversal"), alert.freq_once_per_bar_close)
+if bearReversal and not bearSetupReady
+    alert(buildAlertMsg("bear_reversal"), alert.freq_once_per_bar_close)
+if sweepEQH
+    alert(buildAlertMsg("eqh_sweep"), alert.freq_once_per_bar_close)
+if sweepEQL
+    alert(buildAlertMsg("eql_sweep"), alert.freq_once_per_bar_close)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MINI DASHBOARD  (Part 2 — Context, HTF & Composite)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpDASH = "Dashboard"
+showDashboard = input.bool(true, "Show Dashboard", group=grpDASH)
+dashPosIn     = input.string("middle_right", "Position", group=grpDASH, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+dashSizeIn    = input.string("small", "Text size", group=grpDASH, options=["tiny","small","normal","large"])
+
+dashPos = dashPosIn == "top_right"     ? position.top_right     :
+          dashPosIn == "top_left"      ? position.top_left      :
+          dashPosIn == "middle_right"  ? position.middle_right  :
+          dashPosIn == "middle_left"   ? position.middle_left   :
+          dashPosIn == "bottom_right"  ? position.bottom_right  :
+          position.bottom_left
+dashSz = dashSizeIn == "tiny"   ? size.tiny   :
+         dashSizeIn == "small"  ? size.small  :
+         dashSizeIn == "large"  ? size.large  :
+         size.normal
+
+eqlAge = bar_index - lastEQLSweepBar
+eqhAge = bar_index - lastEQHSweepBar
+
+inPremium  = close > swingMid
+inDiscount = close < swingMid
+priceLoc   = swingHi != swingLo ? math.abs(close - swingMid) / (swingHi - swingLo) * 100.0 : 0.0
+
+var table dash = table.new(dashPos, 2, 10, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+
+if showDashboard and barstate.islast
+    headerBg = color.new(#1A1A2E, 0)
+    table.cell(dash, 0, 0, "SMC v21 — P2", text_color=color.white, bgcolor=headerBg, text_size=dashSz)
+    table.cell(dash, 1, 0, sessTxt + (inMacro ? " M" : ""), text_color=color.gray, bgcolor=headerBg, text_size=size.tiny)
+
+    pdTxt = inPremium ? ("PREMIUM " + str.tostring(priceLoc, "#.0") + "%") : inDiscount ? ("DISCOUNT " + str.tostring(priceLoc, "#.0") + "%") : "EQ"
+    pdCol = inPremium ? pdPremColor : inDiscount ? pdDiscColor : color.gray
+    table.cell(dash, 0, 1, "PD location", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 1, pdTxt, text_color=color.new(pdCol, 0), text_size=dashSz)
+
+    sweepTxt = ""
+    if eqlAge <= 30
+        sweepTxt := "EQL " + str.tostring(eqlAge) + "b"
+    if eqhAge <= 30
+        sweepTxt := sweepTxt == "" ? "EQH " + str.tostring(eqhAge) + "b" : sweepTxt + " | EQH " + str.tostring(eqhAge) + "b"
+    if sweepTxt == ""
+        sweepTxt := "-"
+    table.cell(dash, 0, 2, "Recent sweep", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 2, sweepTxt, text_color=color.new(#00BCD4, 0), text_size=dashSz)
+
+    htfTxt = inHTFBullOB ? "BULL OB" : inHTFBearOB ? "BEAR OB" : inHTFBullFVG ? "BULL FVG" : inHTFBearFVG ? "BEAR FVG" : "-"
+    htfCol = inHTFBullOB or inHTFBullFVG ? color.new(#00C853, 0) : inHTFBearOB or inHTFBearFVG ? color.new(#F23645, 0) : color.gray
+    table.cell(dash, 0, 3, "HTF (" + htfOBTF + ")", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 3, htfTxt, text_color=color.new(htfCol, 0), text_size=dashSz)
+
+    htfPDTxt = inHTFPremium ? "PREMIUM" : inHTFDiscount ? "DISCOUNT" : "-"
+    htfPDCol = inHTFPremium ? pdPremColor : inHTFDiscount ? pdDiscColor : color.gray
+    table.cell(dash, 0, 4, "HTF PD", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 4, htfPDTxt, text_color=color.new(htfPDCol, 0), text_size=dashSz)
+
+    oteTxt = isInOTE ? "IN OTE" : "-"
+    oteCol = isInOTE ? color.new(pdOTEColor, 0) : color.gray
+    table.cell(dash, 0, 5, "OTE", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 5, oteTxt, text_color=oteCol, text_size=dashSz)
+
+    confTxt = (maxHTFBullScore > 0 or maxHTFBearScore > 0) ? "★" + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) + "/3" : "-"
+    confCol = (maxHTFBullScore > 0 or maxHTFBearScore > 0) ? color.new(#FFD600, 0) : color.gray
+    table.cell(dash, 0, 6, "HTF confluence", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 6, confTxt, text_color=confCol, text_size=dashSz)
+
+    setupTxt = bullSetupReady ? "BULL A+" : bearSetupReady ? "BEAR A+" : bullReversal ? "BULL REV" : bearReversal ? "BEAR REV" : "-"
+    setupCol = bullSetupReady or bullReversal ? color.new(#00C853, 0) : bearSetupReady or bearReversal ? color.new(#F23645, 0) : color.gray
+    table.cell(dash, 0, 7, "Setup", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 7, setupTxt, text_color=setupCol, text_size=dashSz)
+
+    table.cell(dash, 0, 8, "Range", text_color=color.white, text_size=dashSz)
+    rngTxt = "H " + str.tostring(swingHi, format.mintick) + " L " + str.tostring(swingLo, format.mintick)
+    table.cell(dash, 1, 8, rngTxt, text_color=color.new(color.gray, 0), text_size=size.tiny)
+
+    table.cell(dash, 0, 9, "ATR(14)", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 9, str.tostring(atr14, format.mintick), text_color=color.new(color.gray, 0), text_size=dashSz)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ALERTS  (Part 2 — alertcondition() variants for legacy users)
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(sweepEQL,      "EQL sweep",           "Sell-side liquidity swept")
+alertcondition(sweepEQH,      "EQH sweep",           "Buy-side liquidity swept")
+alertcondition(bullReversal,  "Bull reversal",       "SSL sweep + bullish CHoCH")
+alertcondition(bearReversal,  "Bear reversal",       "BSL sweep + bearish CHoCH")
+alertcondition(bullSetupReady,"Bull A+ setup",       "High-conviction bullish setup ready")
+alertcondition(bearSetupReady,"Bear A+ setup",       "High-conviction bearish setup ready")
