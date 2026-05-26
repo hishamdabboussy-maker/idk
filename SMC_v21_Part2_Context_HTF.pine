@@ -1136,16 +1136,7 @@ plotshape(bearSetupReady, title="Bear setup ready", location=location.abovebar, 
 // ══════════════════════════════════════════════════════════════════════════════
 
 buildAlertMsg(eventName) =>
-    '{' +
-      '"event":"'   + eventName + '",' +
-      '"symbol":"'  + syminfo.ticker + '",' +
-      '"tf":"'      + timeframe.period + '",' +
-      '"price":'    + str.tostring(close, format.mintick) + ',' +
-      '"htf_pd":"'  + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '",' +
-      '"in_ote":'   + (isInOTE ? "true" : "false") + ',' +
-      '"in_kz":"'   + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '",' +
-      '"htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) +
-    '}'
+    '{"event":"' + eventName + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":' + str.tostring(close, format.mintick) + ',"htf_pd":"' + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '","in_ote":' + (isInOTE ? "true" : "false") + ',"in_kz":"' + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '","htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) + '}'
 
 if bullSetupReady
     alert(buildAlertMsg("bull_setup"), alert.freq_once_per_bar_close)
