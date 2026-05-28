@@ -1,0 +1,243 @@
+//@version=5
+indicator("SMC v21 — Alerts Companion", overlay=true, max_labels_count=200)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMC v21 — ALERTS COMPANION
+//
+//  Standalone signal-only indicator. Adds it to the chart as a 3rd indicator.
+//  Recomputes the same events as Part 1 (BOS / CHoCH / OB / sweeps / FVG /
+//  displacement) and fires alert() with a human-readable message tagged with
+//  symbol, timeframe, price, and killzone.
+//
+//  USAGE
+//   1. Add this indicator to the chart (alongside Part 1 + Part 2).
+//   2. Right-click → Add alert.
+//   3. Condition: "SMC v21 — Alerts Companion"
+//   4. Trigger:   "Any alert() function call"
+//   5. Message:   {{message}}
+//   6. Enable mobile / email / webhook notifications.
+//
+//  IMPORTANT — keep the structure inputs identical to Part 1 (defaults match).
+//  If you change internalLen / externalLen in Part 1, change them here too.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+grpEvt = "Events to alert on"
+aBOS    = input.bool(true,  "Internal BOS / CHoCH",        group=grpEvt)
+aExt    = input.bool(true,  "External BOS / CHoCH (★★★)",  group=grpEvt)
+aOB     = input.bool(true,  "★OB (killzone Order Block)",  group=grpEvt)
+aSweep  = input.bool(true,  "Liquidity sweep (EQH / EQL)", group=grpEvt)
+aDisp   = input.bool(true,  "Displacement candle",         group=grpEvt)
+aFVG    = input.bool(false, "New FVG (noisy — off by default)", group=grpEvt)
+
+grpStr = "Detection (must match Part 1 settings)"
+intLen = input.int(5,  "Internal swing lookback", group=grpStr, minval=2, maxval=30)
+extLen = input.int(25, "External swing lookback", group=grpStr, minval=10, maxval=100)
+
+
+grpKZ  = "Killzones"
+kzTZ   = input.string("America/New_York", "Killzone timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
+kzLDN  = input.session("0200-0500", "London KZ",   group=grpKZ)
+kzNY   = input.session("0930-1100", "New York KZ", group=grpKZ)
+
+grpFVG2 = "FVG / Displacement"
+fvgATR  = input.float(0.3, "Min FVG size x ATR(14)", group=grpFVG2, minval=0.0, maxval=3.0, step=0.1)
+dispATR = input.float(1.7, "Min displacement x ATR(14)", group=grpFVG2, minval=1.0, maxval=5.0, step=0.1)
+
+grpVis = "Visual"
+showMarkers = input.bool(true, "Show on-chart markers", group=grpVis)
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+atr14 = ta.atr(14)
+rng   = high - low
+
+tz       = kzTZ == "exchange" ? syminfo.timezone : kzTZ
+inLDN    = not na(time(timeframe.period, kzLDN, tz))
+inNY     = not na(time(timeframe.period, kzNY,  tz))
+inAnyKZ  = inLDN or inNY
+kzTag    = inLDN ? " [LDN KZ]" : inNY ? " [NY KZ]" : ""
+
+// ── Pivots & last-swing tracking ─────────────────────────────────────────────
+intPH = ta.pivothigh(high, intLen, intLen)
+intPL = ta.pivotlow(low,   intLen, intLen)
+extPH = ta.pivothigh(high, extLen, extLen)
+extPL = ta.pivotlow(low,   extLen, extLen)
+
+var float intLastPH = na
+var float intLastPL = na
+var float extLastPH = na
+var float extLastPL = na
+var int   intTrend  = 0
+var int   extTrend  = 0
+
+if not na(intPH)
+    intLastPH := intPH
+if not na(intPL)
+    intLastPL := intPL
+if not na(extPH)
+    extLastPH := extPH
+if not na(extPL)
+    extLastPL := extPL
+
+
+// ── BOS / CHoCH detection (close-break, mirrors Part 1) ──────────────────────
+intBullBrk = not na(intLastPH) and close > intLastPH and close[1] <= intLastPH
+intBearBrk = not na(intLastPL) and close < intLastPL and close[1] >= intLastPL
+extBullBrk = not na(extLastPH) and close > extLastPH and close[1] <= extLastPH
+extBearBrk = not na(extLastPL) and close < extLastPL and close[1] >= extLastPL
+
+intBullBOS = false
+intBullCHoCH = false
+intBearBOS = false
+intBearCHoCH = false
+if intBullBrk
+    if intTrend == -1
+        intBullCHoCH := true
+    else
+        intBullBOS := true
+    intTrend := 1
+    intLastPH := na
+if intBearBrk
+    if intTrend == 1
+        intBearCHoCH := true
+    else
+        intBearBOS := true
+    intTrend := -1
+    intLastPL := na
+
+extBullBOS = false
+extBullCHoCH = false
+extBearBOS = false
+extBearCHoCH = false
+if extBullBrk
+    if extTrend == -1
+        extBullCHoCH := true
+    else
+        extBullBOS := true
+    extTrend := 1
+    extLastPH := na
+if extBearBrk
+    if extTrend == 1
+        extBearCHoCH := true
+    else
+        extBearBOS := true
+    extTrend := -1
+    extLastPL := na
+
+
+// ── OB detection on BOS bar (looks back for last opposite-color candle) ──────
+newBullOB = false
+newBearOB = false
+obKZ = false
+
+bullStruct = intBullBOS or intBullCHoCH or extBullBOS or extBullCHoCH
+bearStruct = intBearBOS or intBearCHoCH or extBearBOS or extBearCHoCH
+
+if bullStruct
+    for k = 1 to math.min(intLen * 2, 50)
+        if close[k] < open[k]
+            newBullOB := true
+            obKZ := inAnyKZ[k]
+            break
+if bearStruct
+    for k = 1 to math.min(intLen * 2, 50)
+        if close[k] > open[k]
+            newBearOB := true
+            obKZ := inAnyKZ[k]
+            break
+
+// ── Liquidity sweep (simplified: pivot near previous external pivot) ─────────
+sweepEQH = false
+sweepEQL = false
+sweepTol = 0.0015  // 0.15% — tunable
+if not na(intPH) and not na(extLastPH) and extLastPH != 0
+    if math.abs(intPH - extLastPH) / extLastPH < sweepTol
+        if high > extLastPH and close < extLastPH
+            sweepEQH := true
+if not na(intPL) and not na(extLastPL) and extLastPL != 0
+    if math.abs(intPL - extLastPL) / extLastPL < sweepTol
+        if low < extLastPL and close > extLastPL
+            sweepEQL := true
+
+// ── FVG & displacement ───────────────────────────────────────────────────────
+isBullFVG  = (low - high[2]) > (fvgATR * atr14)
+isBearFVG  = (low[2] - high) > (fvgATR * atr14)
+isDispBull = rng >= dispATR * atr14 and close > open
+isDispBear = rng >= dispATR * atr14 and close < open
+
+
+// ── Message builder ──────────────────────────────────────────────────────────
+sym = syminfo.ticker
+tf  = timeframe.period
+prc = str.tostring(close, format.mintick)
+
+msg(event) =>
+    "[" + sym + " " + tf + "] " + event + " @ " + prc + kzTag
+
+// ── Fire alerts ──────────────────────────────────────────────────────────────
+freq = alert.freq_once_per_bar_close
+
+if aBOS and intBullBOS
+    alert(msg("Internal BOS BULL"), freq)
+if aBOS and intBearBOS
+    alert(msg("Internal BOS BEAR"), freq)
+if aBOS and intBullCHoCH
+    alert(msg("Internal CHoCH BULL ★"), freq)
+if aBOS and intBearCHoCH
+    alert(msg("Internal CHoCH BEAR ★"), freq)
+
+if aExt and extBullBOS
+    alert(msg("External BOS BULL ★★"), freq)
+if aExt and extBearBOS
+    alert(msg("External BOS BEAR ★★"), freq)
+if aExt and extBullCHoCH
+    alert(msg("External CHoCH BULL ★★★"), freq)
+if aExt and extBearCHoCH
+    alert(msg("External CHoCH BEAR ★★★"), freq)
+
+if aOB and newBullOB and obKZ
+    alert(msg("★OB BULL (killzone)"), freq)
+if aOB and newBearOB and obKZ
+    alert(msg("★OB BEAR (killzone)"), freq)
+
+if aSweep and sweepEQH
+    alert(msg("Liquidity sweep EQH (BSL)"), freq)
+if aSweep and sweepEQL
+    alert(msg("Liquidity sweep EQL (SSL)"), freq)
+
+if aFVG and isBullFVG
+    alert(msg("Bull FVG"), freq)
+if aFVG and isBearFVG
+    alert(msg("Bear FVG"), freq)
+
+if aDisp and isDispBull
+    alert(msg("Displacement BULL"), freq)
+if aDisp and isDispBear
+    alert(msg("Displacement BEAR"), freq)
+
+
+// ── Visual markers (so you can verify alerts visually) ───────────────────────
+plotshape(showMarkers and (intBullBOS or extBullBOS), title="BOS bull", location=location.belowbar, style=shape.triangleup,   color=color.new(#00C853, 0), size=size.tiny, text="BOS")
+plotshape(showMarkers and (intBearBOS or extBearBOS), title="BOS bear", location=location.abovebar, style=shape.triangledown, color=color.new(#F23645, 0), size=size.tiny, text="BOS")
+plotshape(showMarkers and (intBullCHoCH or extBullCHoCH), title="CHoCH bull", location=location.belowbar, style=shape.diamond, color=color.new(#00E676, 0), size=size.small, text="CHoCH")
+plotshape(showMarkers and (intBearCHoCH or extBearCHoCH), title="CHoCH bear", location=location.abovebar, style=shape.diamond, color=color.new(#FF5252, 0), size=size.small, text="CHoCH")
+plotshape(showMarkers and obKZ and newBullOB, title="KZ OB bull", location=location.belowbar, style=shape.flag, color=color.new(#00BCD4, 0), size=size.small, text="★OB")
+plotshape(showMarkers and obKZ and newBearOB, title="KZ OB bear", location=location.abovebar, style=shape.flag, color=color.new(#FF6D00, 0), size=size.small, text="★OB")
+plotshape(showMarkers and sweepEQH, title="Sweep EQH", location=location.abovebar, style=shape.xcross, color=color.new(#F23645, 0), size=size.small, text="x")
+plotshape(showMarkers and sweepEQL, title="Sweep EQL", location=location.belowbar, style=shape.xcross, color=color.new(#26A69A, 0), size=size.small, text="x")
+
+// ── Legacy alertcondition() variants (for users who prefer one-per-event setup) ─
+alertcondition(intBullBOS,    "Internal Bull BOS",   "Internal Bullish BOS")
+alertcondition(intBearBOS,    "Internal Bear BOS",   "Internal Bearish BOS")
+alertcondition(intBullCHoCH,  "Internal Bull CHoCH", "Internal Bullish CHoCH ★")
+alertcondition(intBearCHoCH,  "Internal Bear CHoCH", "Internal Bearish CHoCH ★")
+alertcondition(extBullBOS,    "External Bull BOS",   "External Bullish BOS ★★")
+alertcondition(extBearBOS,    "External Bear BOS",   "External Bearish BOS ★★")
+alertcondition(extBullCHoCH,  "External Bull CHoCH", "External Bullish CHoCH ★★★")
+alertcondition(extBearCHoCH,  "External Bear CHoCH", "External Bearish CHoCH ★★★")
+alertcondition(newBullOB and obKZ, "KZ OB bull",     "★OB Bull formed in killzone")
+alertcondition(newBearOB and obKZ, "KZ OB bear",     "★OB Bear formed in killzone")
+alertcondition(sweepEQH,      "Sweep EQH",           "Buy-side liquidity swept")
+alertcondition(sweepEQL,      "Sweep EQL",           "Sell-side liquidity swept")
+alertcondition(isDispBull,    "Disp bull",           "Bullish displacement candle")
+alertcondition(isDispBear,    "Disp bear",           "Bearish displacement candle")
