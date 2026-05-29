@@ -1,0 +1,348 @@
+//@version=5
+indicator("SMC v21 — Entry Dashboard", overlay=true, max_labels_count=100)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMC v21 — ENTRY DASHBOARD
+//
+//  Standalone "should I trade?" panel. Computes the confluences from your
+//  SMC v21 stack and grades each side (BULL / BEAR) out of 10.
+//
+//  GRADE SCALE
+//   0–3   SKIP — almost no confluence
+//   4–6   WAIT — wait for a trigger
+//   7–8   READY — take it on retest with confirmation
+//   9–10  A+ — take it bigger; multiple HTF + LTF confluences aligned
+//
+//  USAGE
+//   Add as a 4th indicator. Read the dashboard. When BUY or SELL hits 7+,
+//   wait for retest of nearest zone, then look for an entry trigger
+//   (LTF CHoCH / rejection wick / liquidity sweep + close inside).
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+grpStr = "Detection (match Part 1 / Part 2)"
+intLen = input.int(5,  "Internal swing lookback", group=grpStr, minval=2, maxval=30)
+extLen = input.int(25, "External swing lookback", group=grpStr, minval=10, maxval=100)
+htfTF  = input.timeframe("240", "HTF timeframe (Part 2 default)", group=grpStr)
+
+grpKZ = "Killzones"
+kzTZ  = input.string("America/New_York", "Timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
+kzLDN = input.session("0200-0500", "London KZ", group=grpKZ)
+kzNY  = input.session("0930-1100", "New York KZ", group=grpKZ)
+
+grpScore = "Scoring"
+sweepWindow  = input.int(10, "Recent sweep window (bars)",  group=grpScore, minval=2, maxval=50)
+chochWindow  = input.int(10, "Recent CHoCH window (bars)",  group=grpScore, minval=2, maxval=50)
+dispWindow   = input.int(5,  "Recent displacement (bars)",  group=grpScore, minval=1, maxval=20)
+readyThresh  = input.int(7,  "READY threshold",             group=grpScore, minval=4, maxval=10)
+aplusThresh  = input.int(9,  "A+ threshold",                group=grpScore, minval=7, maxval=10)
+
+grpDash = "Dashboard"
+dashPosIn  = input.string("middle_left", "Position", group=grpDash, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+dashSizeIn = input.string("normal", "Text size",     group=grpDash, options=["tiny","small","normal","large"])
+showLogos  = input.bool(true, "Show check / cross icons", group=grpDash)
+fireAlerts = input.bool(true, "Fire alert on READY",      group=grpDash)
+
+
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+atr14 = ta.atr(14)
+rng   = high - low
+
+tz      = kzTZ == "exchange" ? syminfo.timezone : kzTZ
+inLDN   = not na(time(timeframe.period, kzLDN, tz))
+inNY    = not na(time(timeframe.period, kzNY,  tz))
+inAnyKZ = inLDN or inNY
+
+// ── Pivots ───────────────────────────────────────────────────────────────────
+intPH = ta.pivothigh(high, intLen, intLen)
+intPL = ta.pivotlow(low,   intLen, intLen)
+extPH = ta.pivothigh(high, extLen, extLen)
+extPL = ta.pivotlow(low,   extLen, extLen)
+
+var float intLastPH = na
+var float intLastPL = na
+var float extLastPH = na
+var float extLastPL = na
+var int intTrend = 0
+var int extTrend = 0
+
+if not na(intPH)
+    intLastPH := intPH
+if not na(intPL)
+    intLastPL := intPL
+if not na(extPH)
+    extLastPH := extPH
+if not na(extPL)
+    extLastPL := extPL
+
+// ── BOS/CHoCH (mirrors Part 1 close-break logic) ─────────────────────────────
+intBullBrk = not na(intLastPH) and close > intLastPH and close[1] <= intLastPH
+intBearBrk = not na(intLastPL) and close < intLastPL and close[1] >= intLastPL
+extBullBrk = not na(extLastPH) and close > extLastPH and close[1] <= extLastPH
+extBearBrk = not na(extLastPL) and close < extLastPL and close[1] >= extLastPL
+
+intBullCHoCH = false
+intBearCHoCH = false
+if intBullBrk
+    if intTrend == -1
+        intBullCHoCH := true
+    intTrend := 1
+    intLastPH := na
+if intBearBrk
+    if intTrend == 1
+        intBearCHoCH := true
+    intTrend := -1
+    intLastPL := na
+
+if extBullBrk
+    extTrend := 1
+    extLastPH := na
+if extBearBrk
+    extTrend := -1
+    extLastPL := na
+
+
+
+// ── Track recent CHoCH / sweep / displacement ages ───────────────────────────
+var int lastBullCHoCHBar = -9999
+var int lastBearCHoCHBar = -9999
+var int lastEQLSweepBar  = -9999
+var int lastEQHSweepBar  = -9999
+var int lastDispBullBar  = -9999
+var int lastDispBearBar  = -9999
+
+if intBullCHoCH
+    lastBullCHoCHBar := bar_index
+if intBearCHoCH
+    lastBearCHoCHBar := bar_index
+
+// Liquidity sweep — pivot near previous external pivot, then close back in
+sweepTol = 0.0015
+sweepEQH = false
+sweepEQL = false
+if not na(intPH) and not na(extLastPH) and extLastPH != 0
+    if math.abs(intPH - extLastPH) / extLastPH < sweepTol and high > extLastPH and close < extLastPH
+        sweepEQH := true
+        lastEQHSweepBar := bar_index
+if not na(intPL) and not na(extLastPL) and extLastPL != 0
+    if math.abs(intPL - extLastPL) / extLastPL < sweepTol and low < extLastPL and close > extLastPL
+        sweepEQL := true
+        lastEQLSweepBar := bar_index
+
+// Displacement
+isDispBull = rng >= 1.7 * atr14 and close > open
+isDispBear = rng >= 1.7 * atr14 and close < open
+if isDispBull
+    lastDispBullBar := bar_index
+if isDispBear
+    lastDispBearBar := bar_index
+
+// Ages
+chochBullAge = bar_index - lastBullCHoCHBar
+chochBearAge = bar_index - lastBearCHoCHBar
+sweepEQLAge  = bar_index - lastEQLSweepBar
+sweepEQHAge  = bar_index - lastEQHSweepBar
+dispBullAge  = bar_index - lastDispBullBar
+dispBearAge  = bar_index - lastDispBearBar
+
+// ── HTF context (replicates Part 2 logic) ────────────────────────────────────
+htfH2 = request.security(syminfo.tickerid, htfTF, high[2], lookahead=barmerge.lookahead_off)
+htfL2 = request.security(syminfo.tickerid, htfTF, low[2],  lookahead=barmerge.lookahead_off)
+htfH0 = request.security(syminfo.tickerid, htfTF, high,    lookahead=barmerge.lookahead_off)
+htfL0 = request.security(syminfo.tickerid, htfTF, low,     lookahead=barmerge.lookahead_off)
+htfHi = request.security(syminfo.tickerid, htfTF, ta.highest(high[1], 20), lookahead=barmerge.lookahead_off)
+htfLo = request.security(syminfo.tickerid, htfTF, ta.lowest(low[1], 20),   lookahead=barmerge.lookahead_off)
+
+inHTFBullFVG = not na(htfH2) and not na(htfL0) and (htfL0 - htfH2) > 0 and close >= htfH2 and close <= htfL0
+inHTFBearFVG = not na(htfL2) and not na(htfH0) and (htfL2 - htfH0) > 0 and close >= htfH0 and close <= htfL2
+htfMid = math.avg(htfHi, htfLo)
+inHTFDisc = not na(htfMid) and close < htfMid
+inHTFPrem = not na(htfMid) and close > htfMid
+
+// LTF range for OTE
+swingHi = not na(extLastPH) and not na(extLastPL) ? math.max(extLastPH, extLastPL) : ta.highest(high, 50)
+swingLo = not na(extLastPH) and not na(extLastPL) ? math.min(extLastPH, extLastPL) : ta.lowest(low, 50)
+leg = swingHi - swingLo
+oteHiBull = swingHi - leg * 0.62
+oteLoBull = swingHi - leg * 0.79
+oteLoBear = swingLo + leg * 0.62
+oteHiBear = swingLo + leg * 0.79
+isInOTEBull = extTrend == 1 and close <= oteHiBull and close >= oteLoBull
+isInOTEBear = extTrend == -1 and close <= oteHiBear and close >= oteLoBear
+
+// EMAs
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+aboveEMA = close > ema21 and close > ema50
+belowEMA = close < ema21 and close < ema50
+
+
+
+// ── Score each side ──────────────────────────────────────────────────────────
+//  Total = 10 points
+//   HTF PD aligned         2 pts
+//   HTF FVG zone           2 pts
+//   In OTE                 1 pt
+//   Killzone active        1 pt
+//   Recent sweep           2 pts
+//   Recent CHoCH           1 pt
+//   Recent displacement    1 pt
+//
+//   Trigger boost (+1, capped at 10) if both CHoCH and sweep happened in window.
+// ─────────────────────────────────────────────────────────────────────────────
+
+bullScore = 0
+bearScore = 0
+
+bullPDok       = inHTFDisc
+bullFVGok      = inHTFBullFVG
+bullOTEok      = isInOTEBull
+bullKZok       = inAnyKZ
+bullSweepOk    = sweepEQLAge <= sweepWindow
+bullCHoCHok    = chochBullAge <= chochWindow
+bullDispOk     = dispBullAge  <= dispWindow
+
+if bullPDok
+    bullScore += 2
+if bullFVGok
+    bullScore += 2
+if bullOTEok
+    bullScore += 1
+if bullKZok
+    bullScore += 1
+if bullSweepOk
+    bullScore += 2
+if bullCHoCHok
+    bullScore += 1
+if bullDispOk
+    bullScore += 1
+if bullSweepOk and bullCHoCHok
+    bullScore := math.min(10, bullScore + 1)
+
+bearPDok       = inHTFPrem
+bearFVGok      = inHTFBearFVG
+bearOTEok      = isInOTEBear
+bearKZok       = inAnyKZ
+bearSweepOk    = sweepEQHAge <= sweepWindow
+bearCHoCHok    = chochBearAge <= chochWindow
+bearDispOk     = dispBearAge  <= dispWindow
+
+if bearPDok
+    bearScore += 2
+if bearFVGok
+    bearScore += 2
+if bearOTEok
+    bearScore += 1
+if bearKZok
+    bearScore += 1
+if bearSweepOk
+    bearScore += 2
+if bearCHoCHok
+    bearScore += 1
+if bearDispOk
+    bearScore += 1
+if bearSweepOk and bearCHoCHok
+    bearScore := math.min(10, bearScore + 1)
+
+bullStatus = bullScore >= aplusThresh ? "A+" : bullScore >= readyThresh ? "READY" : bullScore >= 4 ? "WAIT" : "SKIP"
+bearStatus = bearScore >= aplusThresh ? "A+" : bearScore >= readyThresh ? "READY" : bearScore >= 4 ? "WAIT" : "SKIP"
+
+bullCol = bullScore >= aplusThresh ? color.new(#00E676, 0) : bullScore >= readyThresh ? color.new(#26A69A, 0) : bullScore >= 4 ? color.new(#FFB300, 0) : color.gray
+bearCol = bearScore >= aplusThresh ? color.new(#FF5252, 0) : bearScore >= readyThresh ? color.new(#EF5350, 0) : bearScore >= 4 ? color.new(#FFB300, 0) : color.gray
+
+
+
+// ── Dashboard table ──────────────────────────────────────────────────────────
+dashPos = dashPosIn == "top_right"     ? position.top_right     :
+          dashPosIn == "top_left"      ? position.top_left      :
+          dashPosIn == "middle_right"  ? position.middle_right  :
+          dashPosIn == "middle_left"   ? position.middle_left   :
+          dashPosIn == "bottom_right"  ? position.bottom_right  :
+          position.bottom_left
+dashSz = dashSizeIn == "tiny"   ? size.tiny   :
+         dashSizeIn == "small"  ? size.small  :
+         dashSizeIn == "large"  ? size.large  :
+         size.normal
+
+ok(b)    => showLogos ? (b ? "✓" : "✗") : (b ? "Y" : "-")
+okCol(b) => b ? color.new(#00E676, 0) : color.new(color.gray, 30)
+
+var table dash = table.new(dashPos, 3, 11, bgcolor=color.new(#0A0A0A, 5), border_width=1, frame_color=color.new(color.gray, 30), frame_width=1, border_color=color.new(color.gray, 60))
+
+if barstate.islast
+    headerBg = color.new(#1A1A2E, 0)
+    table.cell(dash, 0, 0, "ENTRY GRADE", text_color=color.white, bgcolor=headerBg, text_size=dashSz)
+    table.cell(dash, 1, 0, "BULL",        text_color=color.new(#00E676, 0), bgcolor=headerBg, text_size=dashSz)
+    table.cell(dash, 2, 0, "BEAR",        text_color=color.new(#FF5252, 0), bgcolor=headerBg, text_size=dashSz)
+
+    table.cell(dash, 0, 1, "SCORE / 10", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 1, str.tostring(bullScore) + " " + bullStatus, text_color=bullCol, text_size=dashSz)
+    table.cell(dash, 2, 1, str.tostring(bearScore) + " " + bearStatus, text_color=bearCol, text_size=dashSz)
+
+    table.cell(dash, 0, 2, "HTF PD",       text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 2, ok(bullPDok),   text_color=okCol(bullPDok),   text_size=dashSz)
+    table.cell(dash, 2, 2, ok(bearPDok),   text_color=okCol(bearPDok),   text_size=dashSz)
+
+    table.cell(dash, 0, 3, "HTF FVG",      text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 3, ok(bullFVGok),  text_color=okCol(bullFVGok),  text_size=dashSz)
+    table.cell(dash, 2, 3, ok(bearFVGok),  text_color=okCol(bearFVGok),  text_size=dashSz)
+
+    table.cell(dash, 0, 4, "OTE 62-79",    text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 4, ok(bullOTEok),  text_color=okCol(bullOTEok),  text_size=dashSz)
+    table.cell(dash, 2, 4, ok(bearOTEok),  text_color=okCol(bearOTEok),  text_size=dashSz)
+
+    table.cell(dash, 0, 5, "Killzone",     text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 5, ok(bullKZok),   text_color=okCol(bullKZok),   text_size=dashSz)
+    table.cell(dash, 2, 5, ok(bearKZok),   text_color=okCol(bearKZok),   text_size=dashSz)
+
+    table.cell(dash, 0, 6, "Sweep < " + str.tostring(sweepWindow) + "b", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 6, ok(bullSweepOk), text_color=okCol(bullSweepOk), text_size=dashSz)
+    table.cell(dash, 2, 6, ok(bearSweepOk), text_color=okCol(bearSweepOk), text_size=dashSz)
+
+    table.cell(dash, 0, 7, "CHoCH < " + str.tostring(chochWindow) + "b", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 7, ok(bullCHoCHok), text_color=okCol(bullCHoCHok), text_size=dashSz)
+    table.cell(dash, 2, 7, ok(bearCHoCHok), text_color=okCol(bearCHoCHok), text_size=dashSz)
+
+    table.cell(dash, 0, 8, "Displacement", text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 8, ok(bullDispOk), text_color=okCol(bullDispOk), text_size=dashSz)
+    table.cell(dash, 2, 8, ok(bearDispOk), text_color=okCol(bearDispOk), text_size=dashSz)
+
+    table.cell(dash, 0, 9, "EMA align",    text_color=color.white, text_size=dashSz)
+    table.cell(dash, 1, 9, ok(aboveEMA),   text_color=okCol(aboveEMA),   text_size=dashSz)
+    table.cell(dash, 2, 9, ok(belowEMA),   text_color=okCol(belowEMA),   text_size=dashSz)
+
+    bullAction = bullScore >= aplusThresh ? "TAKE BIG" : bullScore >= readyThresh ? "RETEST OK" : bullScore >= 4 ? "WAIT" : "—"
+    bearAction = bearScore >= aplusThresh ? "TAKE BIG" : bearScore >= readyThresh ? "RETEST OK" : bearScore >= 4 ? "WAIT" : "—"
+    table.cell(dash, 0, 10, "ACTION",     text_color=color.white, bgcolor=headerBg, text_size=dashSz)
+    table.cell(dash, 1, 10, bullAction,   text_color=bullCol, bgcolor=headerBg, text_size=dashSz)
+    table.cell(dash, 2, 10, bearAction,   text_color=bearCol, bgcolor=headerBg, text_size=dashSz)
+
+
+
+// ── Alerts when score crosses READY threshold ────────────────────────────────
+bullReadyNow = bullScore >= readyThresh and (bullScore[1] < readyThresh or na(bullScore[1]))
+bearReadyNow = bearScore >= readyThresh and (bearScore[1] < readyThresh or na(bearScore[1]))
+bullAplusNow = bullScore >= aplusThresh and (bullScore[1] < aplusThresh or na(bullScore[1]))
+bearAplusNow = bearScore >= aplusThresh and (bearScore[1] < aplusThresh or na(bearScore[1]))
+
+sym = syminfo.ticker
+tf  = timeframe.period
+prc = str.tostring(close, format.mintick)
+
+if fireAlerts and bullAplusNow
+    alert("[" + sym + " " + tf + "] BULL A+ entry score " + str.tostring(bullScore) + "/10 @ " + prc, alert.freq_once_per_bar_close)
+if fireAlerts and bearAplusNow
+    alert("[" + sym + " " + tf + "] BEAR A+ entry score " + str.tostring(bearScore) + "/10 @ " + prc, alert.freq_once_per_bar_close)
+if fireAlerts and bullReadyNow and not bullAplusNow
+    alert("[" + sym + " " + tf + "] BULL READY entry score " + str.tostring(bullScore) + "/10 @ " + prc, alert.freq_once_per_bar_close)
+if fireAlerts and bearReadyNow and not bearAplusNow
+    alert("[" + sym + " " + tf + "] BEAR READY entry score " + str.tostring(bearScore) + "/10 @ " + prc, alert.freq_once_per_bar_close)
+
+plotshape(bullReadyNow, title="Bull READY", location=location.belowbar, style=shape.flag, color=color.new(#00E676, 0), size=size.normal, text="ENTRY")
+plotshape(bearReadyNow, title="Bear READY", location=location.abovebar, style=shape.flag, color=color.new(#FF5252, 0), size=size.normal, text="ENTRY")
+
+alertcondition(bullReadyNow, "Bull READY entry", "Bull entry score crossed READY threshold")
+alertcondition(bearReadyNow, "Bear READY entry", "Bear entry score crossed READY threshold")
+alertcondition(bullAplusNow, "Bull A+ entry",    "Bull entry score crossed A+ threshold")
+alertcondition(bearAplusNow, "Bear A+ entry",    "Bear entry score crossed A+ threshold")
