@@ -2252,6 +2252,110 @@ if emaBullCross or emaBearCross
 
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  VOLUME CONFIRMATION  (conviction filter — relative volume + delta proxy)
+//
+//  Edge: real displacement / sweeps / OB formation carry volume. A trigger on
+//  thin volume is noise; a trigger with a volume surge and aligned flow is
+//  conviction. Used as an OPTIONAL gate on composite A+ signals and surfaced in
+//  the dashboard + JSON alert. Relative-volume is cheap & robust. Delta uses a
+//  close-location-value (CLV) proxy — safe on every timeframe (no lower-tf call).
+//  FUTURE UPGRADE: swap the CLV proxy for true intrabar delta via
+//  request.security_lower_tf() once you settle on a fixed minimum chart TF.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpVOL = "Volume Confirmation"
+useVolConf     = input.bool(true,  "Compute volume confirmation",         group=grpVOL)
+volMode        = input.string("Relative volume", "Conviction metric", group=grpVOL, options=["Relative volume","Delta proxy","Both"])
+relVolLen      = input.int(20,     "Relative-volume SMA length",          group=grpVOL, minval=2, maxval=200)
+relVolMin      = input.float(1.5,  "Min relative volume (x average)",     group=grpVOL, minval=0.5, maxval=10.0, step=0.1)
+requireVolBull = input.bool(false, "Require volume confirm for BULL A+",  group=grpVOL, tooltip="When ON a bullish A+ only fires with volume conviction. Default OFF so you can A/B test against the stats panel.")
+requireVolBear = input.bool(false, "Require volume confirm for BEAR A+",  group=grpVOL)
+
+volSma   = ta.sma(volume, relVolLen)
+relVol   = not na(volSma) and volSma > 0 ? volume / volSma : na
+relVolOK = not na(relVol) and relVol >= relVolMin
+
+// Delta proxy = close-location-value (-1..+1) x volume. No lower-tf request,
+// so it never errors regardless of chart timeframe.
+clv         = (high - low) > 0 ? (2 * close - high - low) / (high - low) : 0.0
+pseudoDelta = clv * volume
+deltaBull   = pseudoDelta > 0
+deltaBear   = pseudoDelta < 0
+
+volConfBull = not useVolConf ? true : volMode == "Relative volume" ? relVolOK : volMode == "Delta proxy" ? deltaBull : (relVolOK and deltaBull)
+volConfBear = not useVolConf ? true : volMode == "Relative volume" ? relVolOK : volMode == "Delta proxy" ? deltaBear : (relVolOK and deltaBear)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SMT DIVERGENCE  (cross-asset "crack in correlation")
+//
+//  Edge: two correlated instruments should sweep the same liquidity together.
+//  When the chart prints a new low but the comparison holds a higher low (or the
+//  chart prints a new high while the comparison fails to), correlation cracks —
+//  a footprint of a stop-run / reversal that single-chart price cannot reveal.
+//  Concept: ICT Smart Money Technique (paraphrased).
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpSMT = "SMT Divergence"
+useSMT         = input.bool(true,  "Enable SMT divergence",              group=grpSMT)
+smtSym         = input.symbol("BINANCE:ETHUSDT", "Comparison symbol",    group=grpSMT, tooltip="A correlated instrument. Examples: BTC vs ETH, ES vs NQ, EURUSD vs GBPUSD, an asset vs DXY (inverse). Set this to match your chart.")
+smtLen         = input.int(5,      "SMT pivot lookback",                 group=grpSMT, minval=2, maxval=30)
+smtRecentBars  = input.int(10,     "SMT recency window (bars)",          group=grpSMT, minval=1, maxval=50, tooltip="How long a confirmed SMT counts as a live confluence.")
+smtMarks       = input.bool(true,  "Show SMT markers",                   group=grpSMT)
+requireSMTBull = input.bool(false, "Require SMT for BULL A+",            group=grpSMT)
+requireSMTBear = input.bool(false, "Require SMT for BEAR A+",            group=grpSMT)
+smtBullCol     = input.color(color.new(#00E676, 0), "Bullish SMT", group=grpSMT)
+smtBearCol     = input.color(color.new(#FF5252, 0), "Bearish SMT", group=grpSMT)
+
+[cmpH, cmpL] = request.security(smtSym, timeframe.period, [high, low], lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+
+myPH = ta.pivothigh(high, smtLen, smtLen)
+myPL = ta.pivotlow(low,   smtLen, smtLen)
+
+var float ph_prev  = na
+var float ph_cur   = na
+var float cph_prev = na
+var float cph_cur  = na
+var float pl_prev  = na
+var float pl_cur   = na
+var float cpl_prev = na
+var float cpl_cur  = na
+
+bullSMT = false
+bearSMT = false
+
+if useSMT and not na(myPH) and not na(cmpH)
+    ph_prev  := ph_cur
+    ph_cur   := myPH
+    cph_prev := cph_cur
+    cph_cur  := cmpH[smtLen]
+    // chart higher-high but comparison lower-high → bearish SMT
+    if not na(ph_prev) and not na(cph_prev) and ph_cur > ph_prev and cph_cur < cph_prev
+        bearSMT := true
+if useSMT and not na(myPL) and not na(cmpL)
+    pl_prev  := pl_cur
+    pl_cur   := myPL
+    cpl_prev := cpl_cur
+    cpl_cur  := cmpL[smtLen]
+    // chart lower-low but comparison higher-low → bullish SMT
+    if not na(pl_prev) and not na(cpl_prev) and pl_cur < pl_prev and cpl_cur > cpl_prev
+        bullSMT := true
+
+plotshape(smtMarks and bullSMT, title="Bullish SMT", location=location.belowbar, style=shape.xcross, color=smtBullCol, size=size.small, text="SMT")
+plotshape(smtMarks and bearSMT, title="Bearish SMT", location=location.abovebar, style=shape.xcross, color=smtBearCol, size=size.small, text="SMT")
+
+if useSMT and (bullSMT or bearSMT)
+    alert("SMT divergence (" + (bullSMT ? "bullish" : "bearish") + ") vs " + smtSym + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+var int lastBullSMTBar = -9999
+var int lastBearSMTBar = -9999
+if bullSMT
+    lastBullSMTBar := bar_index
+if bearSMT
+    lastBearSMTBar := bar_index
+smtBullRecent = (bar_index - lastBullSMTBar) <= smtRecentBars
+smtBearRecent = (bar_index - lastBearSMTBar) <= smtRecentBars
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  COMPOSITE SIGNALS
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -2275,8 +2379,8 @@ inLTFPremium  = close > swingMid
 discountForSetup = useHTFForSetup ? inHTFDiscount : inLTFDiscount
 premiumForSetup  = useHTFForSetup ? inHTFPremium  : inLTFPremium
 
-bullSetupReady = bullReversal and discountForSetup and (inHTFBullOB or inHTFBullFVG or isInOTE)
-bearSetupReady = bearReversal and premiumForSetup  and (inHTFBearOB or inHTFBearFVG or isInOTE)
+bullSetupReady = bullReversal and discountForSetup and (inHTFBullOB or inHTFBullFVG or isInOTE) and (not requireVolBull or volConfBull) and (not requireSMTBull or smtBullRecent)
+bearSetupReady = bearReversal and premiumForSetup  and (inHTFBearOB or inHTFBearFVG or isInOTE) and (not requireVolBear or volConfBear) and (not requireSMTBear or smtBearRecent)
 
 plotshape(bullSetupReady, title="Bull setup ready", location=location.belowbar, style=shape.flag, color=color.new(#00C853, 0), size=size.normal, text="A+")
 plotshape(bearSetupReady, title="Bear setup ready", location=location.abovebar, style=shape.flag, color=color.new(#F23645, 0), size=size.normal, text="A+")
@@ -2288,11 +2392,125 @@ plotshape(bearSetupReady, title="Bear setup ready", location=location.abovebar, 
 // ══════════════════════════════════════════════════════════════════════════════
 
 buildAlertMsg(eventName) =>
-    '{"event":"' + eventName + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":' + str.tostring(close, format.mintick) + ',"htf_pd":"' + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '","in_ote":' + (isInOTE ? "true" : "false") + ',"in_kz":"' + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '","htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) + '}'
+    '{"event":"' + eventName + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":' + str.tostring(close, format.mintick) + ',"htf_pd":"' + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '","in_ote":' + (isInOTE ? "true" : "false") + ',"in_kz":"' + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '","htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) + ',"smt":"' + (smtBullRecent ? "bull" : smtBearRecent ? "bear" : "none") + '","rel_vol":' + str.tostring(na(relVol) ? 0.0 : relVol, "#.00") + ',"delta":"' + (deltaBull ? "bull" : deltaBear ? "bear" : "flat") + '"}'
 
 compEvt = bullSetupReady ? "bull_setup" : bearSetupReady ? "bear_setup" : bullReversal ? "bull_reversal" : bearReversal ? "bear_reversal" : sweepEQH ? "eqh_sweep" : sweepEQL ? "eql_sweep" : ""
 if compEvt != ""
     alert(buildAlertMsg(compEvt), alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL EXPECTANCY  (self-measured edge — forward MFE/MAE per signal type)
+//
+//  Edge / data-quality: this MEASURES what each signal actually did, on YOUR
+//  symbol & timeframe, so you weight what pays instead of guessing. For every
+//  fired signal it opens a virtual tracker, follows it for `statHorizon` bars,
+//  and records the max favorable (MFE) and max adverse (MAE) excursion in ATR
+//  units. A signal "wins" when MFE >= MAE * winRatio — pure forward-excursion
+//  data, NOT stop-loss / take-profit. The table shows sample count, win%, and
+//  average MFE/MAE so you can see which signal types carry an edge.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpSTAT = "Signal Expectancy (stats)"
+showStats    = input.bool(true,  "Show expectancy table",       group=grpSTAT)
+statHorizon  = input.int(20,     "Forward horizon (bars)",      group=grpSTAT, minval=3, maxval=200, tooltip="Bars to follow each signal before scoring its MFE/MAE.")
+statWinRatio = input.float(1.0,  "Win = MFE / MAE >=",          group=grpSTAT, minval=0.2, maxval=5.0, step=0.1)
+statPosIn    = input.string("bottom_right", "Table position", group=grpSTAT, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
+statSizeIn   = input.string("tiny", "Text size", group=grpSTAT, options=["tiny","small","normal"])
+
+type StatRow
+    string name
+    int    n      = 0
+    int    wins   = 0
+    float  sumMFE = 0.0
+    float  sumMAE = 0.0
+
+type OpenTr
+    int   idx
+    int   dir
+    float entry
+    int   age = 0
+    float mfe = 0.0
+    float mae = 0.0
+
+var array<StatRow> statRows = array.new<StatRow>()
+if barstate.isfirst
+    array.push(statRows, StatRow.new("Bull A+"))
+    array.push(statRows, StatRow.new("Bear A+"))
+    array.push(statRows, StatRow.new("Bull REV"))
+    array.push(statRows, StatRow.new("Bear REV"))
+    array.push(statRows, StatRow.new("Bull SMT"))
+    array.push(statRows, StatRow.new("Bear SMT"))
+    array.push(statRows, StatRow.new("EQL swp"))
+    array.push(statRows, StatRow.new("EQH swp"))
+
+var array<OpenTr> openTrs = array.new<OpenTr>()
+var int MAX_OPEN_TR = 120
+
+regSig(int idx, int dir) =>
+    if array.size(openTrs) < MAX_OPEN_TR and not na(atr14) and atr14 > 0
+        array.push(openTrs, OpenTr.new(idx, dir, close))
+
+// Register fired signals (dir: +1 long bias, -1 short bias)
+if bullSetupReady
+    regSig(0, 1)
+if bearSetupReady
+    regSig(1, -1)
+if bullReversal and not bullSetupReady
+    regSig(2, 1)
+if bearReversal and not bearSetupReady
+    regSig(3, -1)
+if bullSMT
+    regSig(4, 1)
+if bearSMT
+    regSig(5, -1)
+if sweepEQL
+    regSig(6, 1)
+if sweepEQH
+    regSig(7, -1)
+
+// Advance every open tracker; finalize at the horizon into its StatRow.
+if array.size(openTrs) > 0 and not na(atr14) and atr14 > 0
+    i = array.size(openTrs) - 1
+    while i >= 0
+        t   = array.get(openTrs, i)
+        fav = t.dir == 1 ? (high - t.entry) : (t.entry - low)
+        adv = t.dir == 1 ? (t.entry - low)  : (high - t.entry)
+        t.mfe := math.max(t.mfe, math.max(fav, 0.0) / atr14)
+        t.mae := math.max(t.mae, math.max(adv, 0.0) / atr14)
+        t.age := t.age + 1
+        if t.age >= statHorizon
+            row = array.get(statRows, t.idx)
+            row.n := row.n + 1
+            if t.mfe >= t.mae * statWinRatio and t.mfe > 0
+                row.wins := row.wins + 1
+            row.sumMFE := row.sumMFE + t.mfe
+            row.sumMAE := row.sumMAE + t.mae
+            array.remove(openTrs, i)
+        i := i - 1
+
+statPos = statPosIn == "top_right" ? position.top_right : statPosIn == "top_left" ? position.top_left : statPosIn == "middle_right" ? position.middle_right : statPosIn == "middle_left" ? position.middle_left : statPosIn == "bottom_right" ? position.bottom_right : position.bottom_left
+statSz  = statSizeIn == "tiny" ? size.tiny : statSizeIn == "small" ? size.small : size.normal
+
+var table statTbl = table.new(statPos, 5, 9, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+
+if showStats and barstate.islast
+    hbg = color.new(#1A1A2E, 0)
+    table.cell(statTbl, 0, 0, "SIGNAL", text_color=color.white, bgcolor=hbg, text_size=statSz)
+    table.cell(statTbl, 1, 0, "n",      text_color=color.white, bgcolor=hbg, text_size=statSz)
+    table.cell(statTbl, 2, 0, "Win%",   text_color=color.white, bgcolor=hbg, text_size=statSz)
+    table.cell(statTbl, 3, 0, "MFE",    text_color=color.white, bgcolor=hbg, text_size=statSz)
+    table.cell(statTbl, 4, 0, "MAE",    text_color=color.white, bgcolor=hbg, text_size=statSz)
+    for r = 0 to array.size(statRows) - 1
+        row = array.get(statRows, r)
+        winPct = row.n > 0 ? row.wins / row.n * 100.0 : na
+        avgMFE = row.n > 0 ? row.sumMFE / row.n : na
+        avgMAE = row.n > 0 ? row.sumMAE / row.n : na
+        wCol = na(winPct) ? color.gray : winPct >= 55 ? color.new(#00E676, 0) : winPct >= 45 ? color.new(#FFB300, 0) : color.new(#FF5252, 0)
+        table.cell(statTbl, 0, r + 1, row.name, text_color=color.new(color.silver, 0), text_size=statSz)
+        table.cell(statTbl, 1, r + 1, str.tostring(row.n), text_color=color.new(color.silver, 0), text_size=statSz)
+        table.cell(statTbl, 2, r + 1, na(winPct) ? "-" : str.tostring(winPct, "#") + "%", text_color=wCol, text_size=statSz)
+        table.cell(statTbl, 3, r + 1, na(avgMFE) ? "-" : str.tostring(avgMFE, "#.0"), text_color=color.new(#00BCD4, 0), text_size=statSz)
+        table.cell(statTbl, 4, r + 1, na(avgMAE) ? "-" : str.tostring(avgMAE, "#.0"), text_color=color.new(color.orange, 0), text_size=statSz)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  MINI DASHBOARD  (Part 2 — Context, HTF & Composite)
@@ -2323,7 +2541,7 @@ inPremium  = close > swingMid
 inDiscount = close < swingMid
 priceLoc   = swingHi != swingLo ? math.abs(close - swingMid) / (swingHi - swingLo) * 100.0 : 0.0
 
-var table dashC = table.new(dashPosC, 2, 10, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+var table dashC = table.new(dashPosC, 2, 12, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
 
 if showDashboardC and barstate.islast
     headerBg = color.new(#1A1A2E, 0)
@@ -2377,5 +2595,44 @@ if showDashboardC and barstate.islast
     table.cell(dashC, 0, 9, "ATR(14)", text_color=color.white, text_size=dashSzC)
     table.cell(dashC, 1, 9, str.tostring(atr14, format.mintick), text_color=color.new(color.gray, 0), text_size=dashSzC)
 
+    smtTxt = smtBullRecent ? "BULL" : smtBearRecent ? "BEAR" : "-"
+    smtCol = smtBullRecent ? color.new(#00E676, 0) : smtBearRecent ? color.new(#FF5252, 0) : color.gray
+    table.cell(dashC, 0, 10, "SMT", text_color=color.white, text_size=dashSzC)
+    table.cell(dashC, 1, 10, smtTxt, text_color=smtCol, text_size=dashSzC)
+
+    volTxt = (na(relVol) ? "-" : str.tostring(relVol, "#.0") + "x") + " " + (deltaBull ? "▲" : deltaBear ? "▼" : "·")
+    volCol = relVolOK ? (deltaBull ? color.new(#00E676, 0) : deltaBear ? color.new(#FF5252, 0) : color.new(#FFD600, 0)) : color.gray
+    table.cell(dashC, 0, 11, "Volume", text_color=color.white, text_size=dashSzC)
+    table.cell(dashC, 1, 11, volTxt, text_color=volCol, text_size=dashSzC)
+
 // Part 2 events (EQH/EQL sweeps, reversals, A+ setups) fire via the structured
 // alert() JSON above — subscribe with "Any alert() function call".
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  EXTERNAL / REAL-WORLD DATA  —  FUTURE INTEGRATION HOOK  (scaffold, disabled)
+//
+//  Goal (per roadmap): let real-world / macro data bias the signals for extra
+//  edge. Pine can only read series that exist as TradingView symbols, so the
+//  practical paths are:
+//    • Macro symbols      e.g. TVC:DXY, TVC:US10Y, ECONOMICS:USINTR, VIX
+//    • On-chain / funding  e.g. exchange-published funding or dominance tickers
+//    • Your own feed       publish a CSV/seed symbol, or a webhook->symbol bridge
+//
+//  When you're ready, UNCOMMENT and adapt. It adds ONE request.security and a
+//  directional bias you can AND-into bullSetupReady / bearSetupReady (or add as
+//  a confluence point / stats signal). Kept commented so it costs nothing now.
+//
+//  grpEXT      = "External Data (experimental)"
+//  useExt      = input.bool(false, "Use external data bias", group=grpEXT)
+//  extSym      = input.symbol("TVC:DXY", "External symbol", group=grpEXT)
+//  extInvert   = input.bool(true,  "Invert (e.g. DXY up = risk-off)", group=grpEXT)
+//  extLen      = input.int(20, "Trend length", group=grpEXT, minval=2, maxval=200)
+//  extVal      = request.security(extSym, timeframe.period, close, lookahead=barmerge.lookahead_off, ignore_invalid_symbol=true)
+//  extRising   = not na(extVal) and extVal > ta.ema(extVal, extLen)
+//  extBullBias = not useExt ? true : (extInvert ? not extRising : extRising)
+//  extBearBias = not useExt ? true : (extInvert ? extRising : not extRising)
+//  // then, in the composite section:
+//  //   bullSetupReady := bullSetupReady and extBullBias
+//  //   bearSetupReady := bearSetupReady and extBearBias
+// ══════════════════════════════════════════════════════════════════════════════
