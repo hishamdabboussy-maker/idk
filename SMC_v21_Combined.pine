@@ -22,19 +22,18 @@ indicator("SMC v21 Full Suite — Structure, Zones, Context & HTF", overlay=true
 //  Two dashboards are drawn: P1 (structure) top-right, P2 (context) middle-right.
 //
 //  Added in this revision:
-//    • Session Move Detector — fires once-per-direction-per-session when price
-//      drifts a configurable distance from the Asia/NY/London session open
-//      (catches slow grinds, not just single candles).
 //    • Reliability fixes: unified session inputs, var-tracked periodic-level
 //      labels (no realtime churn), batched request.security calls, and an
 //      optional "wait for bar close" toggle on HTF zones to cut repaint.
+//    • Plot-budget fix (RE10140): removed legacy alertcondition() calls and
+//      consolidated alert() events to stay under the 64-plot limit.
 //
 //  CONTENTS
 //   Part 1 : Market Structure (BOS/CHoCH), Order Blocks, Breaker Blocks,
 //            Mitigation Blocks, Rejection Blocks, FVGs, Inverse FVGs,
 //            Displacement, Entry-grade dashboard.
 //   Part 2 : Volume Imbalances, Liquidity (EQH/EQL + sweeps), Premium/Discount/
-//            OTE, Sessions/Killzones, Session Move Detector, Live Asian Range,
+//            OTE, Sessions/Killzones, Live Asian Range,
 //            ICT Macros, Periodic Levels, Liquidity Levels (1D/7D/30D), HTF
 //            Order Blocks (confluence scored), HTF FVGs, HTF Premium/Discount,
 //            EMAs, Composite "A+" signals, structured JSON alert, context dash.
@@ -100,7 +99,6 @@ labelX(slot) => bar_index + slot * labelStagger
 //  Defines the timezone + Asia/London/NY windows used everywhere:
 //    • OB / BB killzone grading (Part 1)
 //    • Session highlights, Asian Range, composite alert context (Part 2)
-//    • Session Move Detector (new)
 //  Killzone == London window ∪ NY window (their times equal the session times).
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -129,105 +127,6 @@ sessTxt = inLondon and inNY ? "LDN+NY" : inLondon ? "LONDON" : inNY ? "NY" : inA
 bgcolor(showKZ and inAsia   ? asiaColor   : na, title="Asia")
 bgcolor(showKZ and inLondon ? londonColor : na, title="London")
 bgcolor(showKZ and inNY     ? nyColor     : na, title="New York")
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  SESSION MOVE DETECTOR  (catches gradual session pumps/dumps — Asia & NY)
-//
-//  Markets often expand directionally DURING the Asia or NY session without one
-//  obvious candle. This tracks the move from each session's OPEN and fires once
-//  per direction per session when the drift becomes significant — so it catches
-//  slow grinds as well as fast moves.
-//
-//  Modes:
-//    • Open displacement (ATR) : |close - sessionOpen| >= N x ATR(14)
-//    • Open displacement (%)   : |close - sessionOpen| >= N% of sessionOpen
-//    • Opening-range break     : close breaks the first `orBars` bars' H/L (+buffer)
-// ══════════════════════════════════════════════════════════════════════════════
-
-grpSM = "Session Move Detector"
-showSessMove  = input.bool(true,  "Enable session move signals",        group=grpSM)
-smAsia        = input.bool(true,  "Detect Asia session moves",          group=grpSM)
-smNY          = input.bool(true,  "Detect New York session moves",      group=grpSM)
-smLondon      = input.bool(false, "Detect London session moves",        group=grpSM)
-smMode        = input.string("Open displacement (ATR)", "Trigger mode", group=grpSM, options=["Open displacement (ATR)","Open displacement (%)","Opening-range break"])
-smATR         = input.float(1.5,  "Move size x ATR(14)",                group=grpSM, minval=0.2, maxval=10.0, step=0.1, tooltip="Threshold for the ATR displacement mode (and the OR-break buffer base).")
-smPct         = input.float(0.5,  "Move size %",                        group=grpSM, minval=0.05, maxval=20.0, step=0.05, tooltip="Threshold for the % displacement mode.")
-smORBars      = input.int(4,      "Opening-range length (bars)",        group=grpSM, minval=1, maxval=50, tooltip="Bars from session start that define the opening range (OR-break mode).")
-smORBufATR    = input.float(0.1,  "OR-break buffer x ATR(14)",          group=grpSM, minval=0.0, maxval=2.0, step=0.05)
-smShowMarks   = input.bool(true,  "Show markers",                       group=grpSM)
-smAlerts      = input.bool(true,  "Fire alert() events",                group=grpSM)
-smUpCol       = input.color(color.new(#00E676, 0), "Up move",   group=grpSM)
-smDnCol       = input.color(color.new(#FF5252, 0), "Down move", group=grpSM)
-
-// Returns [sigUp, sigDn, moveATRnow]
-//   sigUp/sigDn : true on the bar the move first becomes significant
-//                 (latched once per direction per session)
-//   moveATRnow  : running (close - sessionOpen)/ATR while in session, else na
-//   var state is per call-site, so Asia/NY/London keep independent state.
-detectSessionMove(bool inSess, bool enabled) =>
-    var float sOpen   = na
-    var float orHi    = na
-    var float orLo    = na
-    var int   sBars   = 0
-    var bool  firedUp = false
-    var bool  firedDn = false
-    sigUp = false
-    sigDn = false
-    newSess = inSess and not inSess[1]
-    if newSess
-        sOpen   := open
-        orHi    := high
-        orLo    := low
-        sBars   := 1
-        firedUp := false
-        firedDn := false
-    else if inSess
-        sBars += 1
-        if sBars <= smORBars
-            orHi := math.max(orHi, high)
-            orLo := math.min(orLo, low)
-    moveATRnow = inSess and not na(sOpen) and not na(atr14) and atr14 > 0 ? (close - sOpen) / atr14 : na
-    if enabled and inSess and not na(sOpen)
-        if smMode == "Opening-range break"
-            buf = smORBufATR * atr14
-            if sBars > smORBars
-                if not firedUp and close > orHi + buf
-                    sigUp   := true
-                    firedUp := true
-                if not firedDn and close < orLo - buf
-                    sigDn   := true
-                    firedDn := true
-        else
-            thr = smMode == "Open displacement (%)" ? sOpen * smPct / 100.0 : smATR * atr14
-            move = close - sOpen
-            if not firedUp and move >= thr
-                sigUp   := true
-                firedUp := true
-            if not firedDn and move <= -thr
-                sigDn   := true
-                firedDn := true
-    [sigUp, sigDn, moveATRnow]
-
-[asiaUp, asiaDn, asiaMoveATR] = detectSessionMove(inAsia,   showSessMove and smAsia)
-[nyUp,   nyDn,   nyMoveATR]   = detectSessionMove(inNY,     showSessMove and smNY)
-[lonUp,  lonDn,  lonMoveATR]  = detectSessionMove(inLondon, showSessMove and smLondon)
-
-// Running displacement of whichever session is currently active (for dashboard)
-sessMoveATRnow = inNY ? nyMoveATR : inAsia ? asiaMoveATR : inLondon ? lonMoveATR : na
-
-plotshape(smShowMarks and asiaUp, title="Asia move up",     location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.small, text="ASIA▲")
-plotshape(smShowMarks and asiaDn, title="Asia move down",   location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.small, text="ASIA▼")
-plotshape(smShowMarks and nyUp,   title="NY move up",       location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.small, text="NY▲")
-plotshape(smShowMarks and nyDn,   title="NY move down",     location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.small, text="NY▼")
-plotshape(smShowMarks and lonUp,  title="London move up",   location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.tiny,  text="LDN▲")
-plotshape(smShowMarks and lonDn,  title="London move down", location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.tiny,  text="LDN▼")
-
-sessMoveFired = asiaUp or asiaDn or nyUp or nyDn or lonUp or lonDn
-if smAlerts and sessMoveFired
-    smDir = asiaUp ? "Asia UP" : asiaDn ? "Asia DOWN" : nyUp ? "NY UP" : nyDn ? "NY DOWN" : lonUp ? "London UP" : "London DOWN"
-    alert("Session expansion: " + smDir + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-
-// Session-move alerts fire via alert() above — subscribe with "Any alert() function call".
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  MARKET STRUCTURE
@@ -1322,7 +1221,7 @@ if showDashboard and barstate.islast
 //  counts toward the 64-"plot" limit (RE10140). Use the dynamic alert() events
 //  instead: add ONE alert on this indicator with the condition
 //  "Any alert() function call". Those events cover composite A+ setups,
-//  reversals, liquidity sweeps, session-move expansions, and entry-grade
+//  reversals, liquidity sweeps, and entry-grade
 //  threshold crossings — everything the old named alerts did.
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -2424,7 +2323,7 @@ inPremium  = close > swingMid
 inDiscount = close < swingMid
 priceLoc   = swingHi != swingLo ? math.abs(close - swingMid) / (swingHi - swingLo) * 100.0 : 0.0
 
-var table dashC = table.new(dashPosC, 2, 11, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+var table dashC = table.new(dashPosC, 2, 10, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
 
 if showDashboardC and barstate.islast
     headerBg = color.new(#1A1A2E, 0)
@@ -2477,12 +2376,6 @@ if showDashboardC and barstate.islast
 
     table.cell(dashC, 0, 9, "ATR(14)", text_color=color.white, text_size=dashSzC)
     table.cell(dashC, 1, 9, str.tostring(atr14, format.mintick), text_color=color.new(color.gray, 0), text_size=dashSzC)
-
-    smActive = inNY ? "NY" : inAsia ? "ASIA" : inLondon ? "LDN" : ""
-    smTxt = na(sessMoveATRnow) ? "-" : smActive + " " + (sessMoveATRnow >= 0 ? "+" : "") + str.tostring(sessMoveATRnow, "#.0") + "x"
-    smCol = na(sessMoveATRnow) ? color.gray : sessMoveATRnow >= 0 ? smUpCol : smDnCol
-    table.cell(dashC, 0, 10, "Session move", text_color=color.white, text_size=dashSzC)
-    table.cell(dashC, 1, 10, smTxt, text_color=smCol, text_size=dashSzC)
 
 // Part 2 events (EQH/EQL sweeps, reversals, A+ setups) fire via the structured
 // alert() JSON above — subscribe with "Any alert() function call".
