@@ -222,25 +222,12 @@ plotshape(smShowMarks and nyDn,   title="NY move down",     location=location.ab
 plotshape(smShowMarks and lonUp,  title="London move up",   location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.tiny,  text="LDN▲")
 plotshape(smShowMarks and lonDn,  title="London move down", location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.tiny,  text="LDN▼")
 
-if smAlerts and asiaUp
-    alert("Asia session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-if smAlerts and asiaDn
-    alert("Asia session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-if smAlerts and nyUp
-    alert("NY session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-if smAlerts and nyDn
-    alert("NY session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-if smAlerts and lonUp
-    alert("London session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
-if smAlerts and lonDn
-    alert("London session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+sessMoveFired = asiaUp or asiaDn or nyUp or nyDn or lonUp or lonDn
+if smAlerts and sessMoveFired
+    smDir = asiaUp ? "Asia UP" : asiaDn ? "Asia DOWN" : nyUp ? "NY UP" : nyDn ? "NY DOWN" : lonUp ? "London UP" : "London DOWN"
+    alert("Session expansion: " + smDir + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
 
-alertcondition(asiaUp, "Asia session move up",     "Asia session expansion up")
-alertcondition(asiaDn, "Asia session move down",   "Asia session expansion down")
-alertcondition(nyUp,   "NY session move up",       "NY session expansion up")
-alertcondition(nyDn,   "NY session move down",     "NY session expansion down")
-alertcondition(lonUp,  "London session move up",   "London session expansion up")
-alertcondition(lonDn,  "London session move down", "London session expansion down")
+// Session-move alerts fire via alert() above — subscribe with "Any alert() function call".
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  MARKET STRUCTURE
@@ -1330,21 +1317,14 @@ if showDashboard and barstate.islast
     table.cell(dash, 1, 9, str.tostring(atr14, format.mintick), text_color=color.new(color.gray, 0), text_size=dashSz)
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  ALERTS  (Part 1 — Structure & Zones)
+//  ALERTS
+//  NOTE: the legacy alertcondition() calls were removed — in Pine each one
+//  counts toward the 64-"plot" limit (RE10140). Use the dynamic alert() events
+//  instead: add ONE alert on this indicator with the condition
+//  "Any alert() function call". Those events cover composite A+ setups,
+//  reversals, liquidity sweeps, session-move expansions, and entry-grade
+//  threshold crossings — everything the old named alerts did.
 // ══════════════════════════════════════════════════════════════════════════════
-
-alertcondition(intBullBOS,    "Internal Bull BOS",   "Internal Bullish BOS")
-alertcondition(intBearBOS,    "Internal Bear BOS",   "Internal Bearish BOS")
-alertcondition(intBullCHoCH,  "Internal Bull CHoCH", "Internal Bullish CHoCH")
-alertcondition(intBearCHoCH,  "Internal Bear CHoCH", "Internal Bearish CHoCH")
-alertcondition(extBullBOS,    "External Bull BOS",   "External Bullish BOS")
-alertcondition(extBearBOS,    "External Bear BOS",   "External Bearish BOS")
-alertcondition(extBullCHoCH,  "External Bull CHoCH", "External Bullish CHoCH")
-alertcondition(extBearCHoCH,  "External Bear CHoCH", "External Bearish CHoCH")
-alertcondition(isBullFVG,     "Bull FVG",            "Bullish Fair Value Gap")
-alertcondition(isBearFVG,     "Bear FVG",            "Bearish Fair Value Gap")
-alertcondition(isDispBull,    "Bull displacement",   "Bullish displacement candle")
-alertcondition(isDispBear,    "Bear displacement",   "Bearish displacement candle")
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ENTRY DASHBOARD  (10-point setup grading)
@@ -1491,22 +1471,15 @@ sym_e = syminfo.ticker
 tf_e  = timeframe.period
 prc_e = str.tostring(close, format.mintick)
 
-if fireEntryAlt and bullAplus_e
-    alert("[" + sym_e + " " + tf_e + "] BULL A+ entry " + str.tostring(bullScore_e) + "/10 @ " + prc_e, alert.freq_once_per_bar_close)
-if fireEntryAlt and bearAplus_e
-    alert("[" + sym_e + " " + tf_e + "] BEAR A+ entry " + str.tostring(bearScore_e) + "/10 @ " + prc_e, alert.freq_once_per_bar_close)
-if fireEntryAlt and bullReady_e and not bullAplus_e
-    alert("[" + sym_e + " " + tf_e + "] BULL READY entry " + str.tostring(bullScore_e) + "/10 @ " + prc_e, alert.freq_once_per_bar_close)
-if fireEntryAlt and bearReady_e and not bearAplus_e
-    alert("[" + sym_e + " " + tf_e + "] BEAR READY entry " + str.tostring(bearScore_e) + "/10 @ " + prc_e, alert.freq_once_per_bar_close)
+entryEvt = bullAplus_e ? "BULL A+" : bearAplus_e ? "BEAR A+" : bullReady_e ? "BULL READY" : bearReady_e ? "BEAR READY" : ""
+entryScr = bullAplus_e or bullReady_e ? bullScore_e : bearScore_e
+if fireEntryAlt and entryEvt != ""
+    alert("[" + sym_e + " " + tf_e + "] " + entryEvt + " entry " + str.tostring(entryScr) + "/10 @ " + prc_e, alert.freq_once_per_bar_close)
 
 plotshape(bullReady_e, title="Bull READY entry", location=location.belowbar, style=shape.flag, color=color.new(#00E676, 0), size=size.normal, text="ENTRY")
 plotshape(bearReady_e, title="Bear READY entry", location=location.abovebar, style=shape.flag, color=color.new(#FF5252, 0), size=size.normal, text="ENTRY")
 
-alertcondition(bullReady_e, "Bull READY entry", "Bull entry score crossed READY threshold")
-alertcondition(bearReady_e, "Bear READY entry", "Bear entry score crossed READY threshold")
-alertcondition(bullAplus_e, "Bull A+ entry",    "Bull entry score crossed A+ threshold")
-alertcondition(bearAplus_e, "Bear A+ entry",    "Bear entry score crossed A+ threshold")
+// Entry-grade alerts fire via alert() above — subscribe with "Any alert() function call".
 
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -2134,12 +2107,9 @@ liqSweep7L  = showWeekLiq  and not na(liq7Lo)  and low  < liq7Lo  and close > li
 liqSweep30H = showMonthLiq and not na(liq30Hi) and high > liq30Hi and close < liq30Hi
 liqSweep30L = showMonthLiq and not na(liq30Lo) and low  < liq30Lo and close > liq30Lo
 
-alertcondition(liqSweep1H,  "1D high swept",  "1-day liquidity high swept")
-alertcondition(liqSweep1L,  "1D low swept",   "1-day liquidity low swept")
-alertcondition(liqSweep7H,  "7D high swept",  "7-day liquidity high swept")
-alertcondition(liqSweep7L,  "7D low swept",   "7-day liquidity low swept")
-alertcondition(liqSweep30H, "30D high swept", "30-day liquidity high swept")
-alertcondition(liqSweep30L, "30D low swept",  "30-day liquidity low swept")
+if (liqSweep1H or liqSweep1L or liqSweep7H or liqSweep7L or liqSweep30H or liqSweep30L)
+    sLbl = liqSweep1H ? "1D high" : liqSweep1L ? "1D low" : liqSweep7H ? "7D high" : liqSweep7L ? "7D low" : liqSweep30H ? "30D high" : "30D low"
+    alert("Liquidity swept: " + sLbl + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2378,8 +2348,8 @@ emaBearCross = showEma1 and showEma2 and ta.crossunder(ema1Val, ema2Val)
 plotshape(emaCrossLbl and emaBullCross, title="EMA bull cross", location=location.belowbar, style=shape.circle, color=color.new(#00C853, 0), size=size.tiny, text="X")
 plotshape(emaCrossLbl and emaBearCross, title="EMA bear cross", location=location.abovebar, style=shape.circle, color=color.new(#F23645, 0), size=size.tiny, text="X")
 
-alertcondition(emaBullCross, "EMA bull cross", "Fast EMA crossed above slow EMA")
-alertcondition(emaBearCross, "EMA bear cross", "Fast EMA crossed below slow EMA")
+if emaBullCross or emaBearCross
+    alert("EMA cross (" + (emaBullCross ? "bull" : "bear") + ") @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2421,18 +2391,9 @@ plotshape(bearSetupReady, title="Bear setup ready", location=location.abovebar, 
 buildAlertMsg(eventName) =>
     '{"event":"' + eventName + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":' + str.tostring(close, format.mintick) + ',"htf_pd":"' + (inHTFPremium ? "premium" : inHTFDiscount ? "discount" : "eq") + '","in_ote":' + (isInOTE ? "true" : "false") + ',"in_kz":"' + (inLondon ? "london" : inNY ? "ny" : inAsia ? "asia" : "off") + '","htf_score":' + str.tostring(math.max(maxHTFBullScore, maxHTFBearScore)) + '}'
 
-if bullSetupReady
-    alert(buildAlertMsg("bull_setup"), alert.freq_once_per_bar_close)
-if bearSetupReady
-    alert(buildAlertMsg("bear_setup"), alert.freq_once_per_bar_close)
-if bullReversal and not bullSetupReady
-    alert(buildAlertMsg("bull_reversal"), alert.freq_once_per_bar_close)
-if bearReversal and not bearSetupReady
-    alert(buildAlertMsg("bear_reversal"), alert.freq_once_per_bar_close)
-if sweepEQH
-    alert(buildAlertMsg("eqh_sweep"), alert.freq_once_per_bar_close)
-if sweepEQL
-    alert(buildAlertMsg("eql_sweep"), alert.freq_once_per_bar_close)
+compEvt = bullSetupReady ? "bull_setup" : bearSetupReady ? "bear_setup" : bullReversal ? "bull_reversal" : bearReversal ? "bear_reversal" : sweepEQH ? "eqh_sweep" : sweepEQL ? "eql_sweep" : ""
+if compEvt != ""
+    alert(buildAlertMsg(compEvt), alert.freq_once_per_bar_close)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  MINI DASHBOARD  (Part 2 — Context, HTF & Composite)
@@ -2523,13 +2484,5 @@ if showDashboardC and barstate.islast
     table.cell(dashC, 0, 10, "Session move", text_color=color.white, text_size=dashSzC)
     table.cell(dashC, 1, 10, smTxt, text_color=smCol, text_size=dashSzC)
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  ALERTS  (Part 2 — alertcondition() variants for legacy users)
-// ══════════════════════════════════════════════════════════════════════════════
-
-alertcondition(sweepEQL,      "EQL sweep",           "Sell-side liquidity swept")
-alertcondition(sweepEQH,      "EQH sweep",           "Buy-side liquidity swept")
-alertcondition(bullReversal,  "Bull reversal",       "SSL sweep + bullish CHoCH")
-alertcondition(bearReversal,  "Bear reversal",       "BSL sweep + bearish CHoCH")
-alertcondition(bullSetupReady,"Bull A+ setup",       "High-conviction bullish setup ready")
-alertcondition(bearSetupReady,"Bear A+ setup",       "High-conviction bearish setup ready")
+// Part 2 events (EQH/EQL sweeps, reversals, A+ setups) fire via the structured
+// alert() JSON above — subscribe with "Any alert() function call".
