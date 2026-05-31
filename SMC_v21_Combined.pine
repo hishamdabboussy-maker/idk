@@ -14,21 +14,30 @@ indicator("SMC v21 Full Suite — Structure, Zones, Context & HTF", overlay=true
 //  its two extra trackers (lastExtPH_val / lastExtPL_val, used by Premium/
 //  Discount/OTE) were folded into the full Part-1 structure engine.
 //
-//  Collisions that were renamed so both halves coexist:
-//    • Part 2 "Sessions / Killzones" group var  grpKZ   -> grpSESS
+//  Sessions / Killzones are now defined ONCE near the top (group "Sessions /
+//  Killzones") and consumed by both halves — the duplicate Part-2 session block
+//  was removed. The two dashboards still use distinct symbols so they coexist:
 //    • Part 2 context dashboard symbols  (grpDASH/showDashboard/dashPos*/dashSz/
 //      table dash)  ->  *C  variants, group string "Dashboard (Context)"
 //  Two dashboards are drawn: P1 (structure) top-right, P2 (context) middle-right.
+//
+//  Added in this revision:
+//    • Session Move Detector — fires once-per-direction-per-session when price
+//      drifts a configurable distance from the Asia/NY/London session open
+//      (catches slow grinds, not just single candles).
+//    • Reliability fixes: unified session inputs, var-tracked periodic-level
+//      labels (no realtime churn), batched request.security calls, and an
+//      optional "wait for bar close" toggle on HTF zones to cut repaint.
 //
 //  CONTENTS
 //   Part 1 : Market Structure (BOS/CHoCH), Order Blocks, Breaker Blocks,
 //            Mitigation Blocks, Rejection Blocks, FVGs, Inverse FVGs,
 //            Displacement, Entry-grade dashboard.
 //   Part 2 : Volume Imbalances, Liquidity (EQH/EQL + sweeps), Premium/Discount/
-//            OTE, Sessions/Killzones, Live Asian Range, ICT Macros, Periodic
-//            Levels, Liquidity Levels (1D/7D/30D), HTF Order Blocks (confluence
-//            scored), HTF FVGs, HTF Premium/Discount, EMAs, Composite "A+"
-//            signals, structured JSON alert, context dashboard.
+//            OTE, Sessions/Killzones, Session Move Detector, Live Asian Range,
+//            ICT Macros, Periodic Levels, Liquidity Levels (1D/7D/30D), HTF
+//            Order Blocks (confluence scored), HTF FVGs, HTF Premium/Discount,
+//            EMAs, Composite "A+" signals, structured JSON alert, context dash.
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -87,19 +96,151 @@ fadeColor(c) => color.new(c, farZoneAlpha)
 labelX(slot) => bar_index + slot * labelStagger
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SESSIONS (slim — for killzone-aware OB/BB tagging only)
+//  SESSIONS / KILLZONES  (UNIFIED — single source of truth for both halves)
+//  Defines the timezone + Asia/London/NY windows used everywhere:
+//    • OB / BB killzone grading (Part 1)
+//    • Session highlights, Asian Range, composite alert context (Part 2)
+//    • Session Move Detector (new)
+//  Killzone == London window ∪ NY window (their times equal the session times).
 // ══════════════════════════════════════════════════════════════════════════════
 
-grpKZ = "Killzones (for OB/BB grading)"
-useKillzoneOB = input.bool(true,  "Tag OBs formed in killzones with ★", group=grpKZ)
-kzTZ          = input.string("America/New_York", "Killzone timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
-kzLondonSess  = input.session("0200-0500", "London KZ",   group=grpKZ)
-kzNYSess      = input.session("0930-1100", "New York KZ", group=grpKZ)
+grpKZ = "Sessions / Killzones"
+showKZ        = input.bool(true,  "Show session highlights",                group=grpKZ)
+useKillzoneOB = input.bool(true,  "Tag OBs/BBs formed in killzones with ★",  group=grpKZ)
+sessTZ        = input.string("America/New_York", "Session timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
+asiaSess      = input.session("2000-0000", "Asia session",        group=grpKZ, tooltip="Default times are NY-time. Adjust if the timezone is changed.")
+londonSess    = input.session("0200-0500", "London session / KZ", group=grpKZ)
+nySess        = input.session("0930-1100", "New York session / KZ", group=grpKZ)
+asiaColor     = input.color(color.new(#FFA726, 92), "Asia bg",   group=grpKZ)
+londonColor   = input.color(color.new(#26A69A, 92), "London bg", group=grpKZ)
+nyColor       = input.color(color.new(#42A5F5, 92), "NY bg",     group=grpKZ)
 
-kzTzResolved = kzTZ == "exchange" ? syminfo.timezone : kzTZ
-inLondonKZ   = not na(time(timeframe.period, kzLondonSess, kzTzResolved))
-inNYKZ       = not na(time(timeframe.period, kzNYSess,     kzTzResolved))
-inAnyKZ      = inLondonKZ or inNYKZ
+tz = sessTZ == "exchange" ? syminfo.timezone : sessTZ
+inAsia   = not na(time(timeframe.period, asiaSess,   tz))
+inLondon = not na(time(timeframe.period, londonSess, tz))
+inNY     = not na(time(timeframe.period, nySess,     tz))
+
+inLondonKZ = inLondon
+inNYKZ     = inNY
+inAnyKZ    = inLondon or inNY
+inAnyKZ_p2 = inAnyKZ
+sessTxt = inLondon and inNY ? "LDN+NY" : inLondon ? "LONDON" : inNY ? "NY" : inAsia ? "ASIA" : "OFF"
+
+bgcolor(showKZ and inAsia   ? asiaColor   : na, title="Asia")
+bgcolor(showKZ and inLondon ? londonColor : na, title="London")
+bgcolor(showKZ and inNY     ? nyColor     : na, title="New York")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SESSION MOVE DETECTOR  (catches gradual session pumps/dumps — Asia & NY)
+//
+//  Markets often expand directionally DURING the Asia or NY session without one
+//  obvious candle. This tracks the move from each session's OPEN and fires once
+//  per direction per session when the drift becomes significant — so it catches
+//  slow grinds as well as fast moves.
+//
+//  Modes:
+//    • Open displacement (ATR) : |close - sessionOpen| >= N x ATR(14)
+//    • Open displacement (%)   : |close - sessionOpen| >= N% of sessionOpen
+//    • Opening-range break     : close breaks the first `orBars` bars' H/L (+buffer)
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpSM = "Session Move Detector"
+showSessMove  = input.bool(true,  "Enable session move signals",        group=grpSM)
+smAsia        = input.bool(true,  "Detect Asia session moves",          group=grpSM)
+smNY          = input.bool(true,  "Detect New York session moves",      group=grpSM)
+smLondon      = input.bool(false, "Detect London session moves",        group=grpSM)
+smMode        = input.string("Open displacement (ATR)", "Trigger mode", group=grpSM, options=["Open displacement (ATR)","Open displacement (%)","Opening-range break"])
+smATR         = input.float(1.5,  "Move size x ATR(14)",                group=grpSM, minval=0.2, maxval=10.0, step=0.1, tooltip="Threshold for the ATR displacement mode (and the OR-break buffer base).")
+smPct         = input.float(0.5,  "Move size %",                        group=grpSM, minval=0.05, maxval=20.0, step=0.05, tooltip="Threshold for the % displacement mode.")
+smORBars      = input.int(4,      "Opening-range length (bars)",        group=grpSM, minval=1, maxval=50, tooltip="Bars from session start that define the opening range (OR-break mode).")
+smORBufATR    = input.float(0.1,  "OR-break buffer x ATR(14)",          group=grpSM, minval=0.0, maxval=2.0, step=0.05)
+smShowMarks   = input.bool(true,  "Show markers",                       group=grpSM)
+smAlerts      = input.bool(true,  "Fire alert() events",                group=grpSM)
+smUpCol       = input.color(color.new(#00E676, 0), "Up move",   group=grpSM)
+smDnCol       = input.color(color.new(#FF5252, 0), "Down move", group=grpSM)
+
+// Returns [sigUp, sigDn, moveATRnow]
+//   sigUp/sigDn : true on the bar the move first becomes significant
+//                 (latched once per direction per session)
+//   moveATRnow  : running (close - sessionOpen)/ATR while in session, else na
+//   var state is per call-site, so Asia/NY/London keep independent state.
+detectSessionMove(bool inSess, bool enabled) =>
+    var float sOpen   = na
+    var float orHi    = na
+    var float orLo    = na
+    var int   sBars   = 0
+    var bool  firedUp = false
+    var bool  firedDn = false
+    sigUp = false
+    sigDn = false
+    newSess = inSess and not inSess[1]
+    if newSess
+        sOpen   := open
+        orHi    := high
+        orLo    := low
+        sBars   := 1
+        firedUp := false
+        firedDn := false
+    else if inSess
+        sBars += 1
+        if sBars <= smORBars
+            orHi := math.max(orHi, high)
+            orLo := math.min(orLo, low)
+    moveATRnow = inSess and not na(sOpen) and not na(atr14) and atr14 > 0 ? (close - sOpen) / atr14 : na
+    if enabled and inSess and not na(sOpen)
+        if smMode == "Opening-range break"
+            buf = smORBufATR * atr14
+            if sBars > smORBars
+                if not firedUp and close > orHi + buf
+                    sigUp   := true
+                    firedUp := true
+                if not firedDn and close < orLo - buf
+                    sigDn   := true
+                    firedDn := true
+        else
+            thr = smMode == "Open displacement (%)" ? sOpen * smPct / 100.0 : smATR * atr14
+            move = close - sOpen
+            if not firedUp and move >= thr
+                sigUp   := true
+                firedUp := true
+            if not firedDn and move <= -thr
+                sigDn   := true
+                firedDn := true
+    [sigUp, sigDn, moveATRnow]
+
+[asiaUp, asiaDn, asiaMoveATR] = detectSessionMove(inAsia,   showSessMove and smAsia)
+[nyUp,   nyDn,   nyMoveATR]   = detectSessionMove(inNY,     showSessMove and smNY)
+[lonUp,  lonDn,  lonMoveATR]  = detectSessionMove(inLondon, showSessMove and smLondon)
+
+// Running displacement of whichever session is currently active (for dashboard)
+sessMoveATRnow = inNY ? nyMoveATR : inAsia ? asiaMoveATR : inLondon ? lonMoveATR : na
+
+plotshape(smShowMarks and asiaUp, title="Asia move up",     location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.small, text="ASIA▲")
+plotshape(smShowMarks and asiaDn, title="Asia move down",   location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.small, text="ASIA▼")
+plotshape(smShowMarks and nyUp,   title="NY move up",       location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.small, text="NY▲")
+plotshape(smShowMarks and nyDn,   title="NY move down",     location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.small, text="NY▼")
+plotshape(smShowMarks and lonUp,  title="London move up",   location=location.belowbar, style=shape.labelup,   color=smUpCol, textcolor=color.black, size=size.tiny,  text="LDN▲")
+plotshape(smShowMarks and lonDn,  title="London move down", location=location.abovebar, style=shape.labeldown, color=smDnCol, textcolor=color.white, size=size.tiny,  text="LDN▼")
+
+if smAlerts and asiaUp
+    alert("Asia session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if smAlerts and asiaDn
+    alert("Asia session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if smAlerts and nyUp
+    alert("NY session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if smAlerts and nyDn
+    alert("NY session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if smAlerts and lonUp
+    alert("London session expansion UP @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+if smAlerts and lonDn
+    alert("London session expansion DOWN @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+alertcondition(asiaUp, "Asia session move up",     "Asia session expansion up")
+alertcondition(asiaDn, "Asia session move down",   "Asia session expansion down")
+alertcondition(nyUp,   "NY session move up",       "NY session expansion up")
+alertcondition(nyDn,   "NY session move down",     "NY session expansion down")
+alertcondition(lonUp,  "London session move up",   "London session expansion up")
+alertcondition(lonDn,  "London session move down", "London session expansion down")
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  MARKET STRUCTURE
@@ -1688,31 +1829,7 @@ if showPD and showOTE and barstate.islast
 isInOTE = not na(oteHi) and not na(oteLo) and close <= oteHi and close >= oteLo
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  SESSIONS / KILLZONES  (lighter alphas)   [group renamed grpKZ -> grpSESS]
-// ══════════════════════════════════════════════════════════════════════════════
-
-grpSESS = "Sessions / Killzones"
-showKZ        = input.bool(true,  "Show session highlights", group=grpSESS)
-sessTZ        = input.string("America/New_York", "Session timezone", group=grpSESS, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
-asiaSess      = input.session("2000-0000", "Asia",     group=grpSESS, tooltip="Default times are NY-time. Adjust if timezone is changed.")
-londonSess    = input.session("0200-0500", "London",   group=grpSESS)
-nySess        = input.session("0930-1100", "New York", group=grpSESS)
-asiaColor     = input.color(color.new(#FFA726, 92), "Asia bg",   group=grpSESS)
-londonColor   = input.color(color.new(#26A69A, 92), "London bg", group=grpSESS)
-nyColor       = input.color(color.new(#42A5F5, 92), "NY bg",     group=grpSESS)
-
-tz = sessTZ == "exchange" ? syminfo.timezone : sessTZ
-inAsia   = not na(time(timeframe.period, asiaSess,   tz))
-inLondon = not na(time(timeframe.period, londonSess, tz))
-inNY     = not na(time(timeframe.period, nySess,     tz))
-
-bgcolor(showKZ and inAsia   ? asiaColor   : na, title="Asia")
-bgcolor(showKZ and inLondon ? londonColor : na, title="London")
-bgcolor(showKZ and inNY     ? nyColor     : na, title="New York")
-
-inAnyKZ_p2 = inLondon or inNY
-sessTxt = inLondon and inNY ? "LDN+NY" : inLondon ? "LONDON" : inNY ? "NY" : inAsia ? "ASIA" : "OFF"
+// (Sessions / Killzones are now defined once near the top of the script.)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ASIAN RANGE  (LIVE — updates every bar during session)
@@ -1828,15 +1945,10 @@ prevDColor  = input.color(color.new(#90CAF9, 30), "Previous D H/L", group=grpLVL
 prevWColor  = input.color(color.new(#CE93D8, 30), "Previous W H/L", group=grpLVL)
 prevMColor  = input.color(color.new(#FFAB91, 30), "Previous M H/L", group=grpLVL)
 
-dOpen  = request.security(syminfo.tickerid, "D", open,  lookahead=barmerge.lookahead_off)
-wOpen  = request.security(syminfo.tickerid, "W", open,  lookahead=barmerge.lookahead_off)
-mOpen  = request.security(syminfo.tickerid, "M", open,  lookahead=barmerge.lookahead_off)
-prevDH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
-prevDL = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
-prevWH = request.security(syminfo.tickerid, "W", high[1], lookahead=barmerge.lookahead_off)
-prevWL = request.security(syminfo.tickerid, "W", low[1],  lookahead=barmerge.lookahead_off)
-prevMH = request.security(syminfo.tickerid, "M", high[1], lookahead=barmerge.lookahead_off)
-prevML = request.security(syminfo.tickerid, "M", low[1],  lookahead=barmerge.lookahead_off)
+// Batched into one request.security per resolution (was 9 calls, now 3).
+[dOpen, prevDH, prevDL] = request.security(syminfo.tickerid, "D", [open, high[1], low[1]], lookahead=barmerge.lookahead_off)
+[wOpen, prevWH, prevWL] = request.security(syminfo.tickerid, "W", [open, high[1], low[1]], lookahead=barmerge.lookahead_off)
+[mOpen, prevMH, prevML] = request.security(syminfo.tickerid, "M", [open, high[1], low[1]], lookahead=barmerge.lookahead_off)
 
 plot(showOpens  ? dOpen  : na, "Daily open",   color=dOpenColor, style=plot.style_linebr, linewidth=1)
 plot(showOpens  ? wOpen  : na, "Weekly open",  color=wOpenColor, style=plot.style_linebr, linewidth=1)
@@ -1848,19 +1960,40 @@ plot(showPrevHL ? prevWL : na, "PWL", color=prevWColor, style=plot.style_linebr,
 plot(showPrevHL ? prevMH : na, "PMH", color=prevMColor, style=plot.style_linebr, linewidth=1)
 plot(showPrevHL ? prevML : na, "PML", color=prevMColor, style=plot.style_linebr, linewidth=1)
 
+// Level labels — var handles + delete-before-redraw so realtime ticks on the
+// last bar don't churn label.new() (which evicts other labels via the 500 cap).
+var label lvlDO  = na
+var label lvlWO  = na
+var label lvlMO  = na
+var label lvlPDH = na
+var label lvlPDL = na
+var label lvlPWH = na
+var label lvlPWL = na
+var label lvlPMH = na
+var label lvlPML = na
+
 if barstate.islast and lblAllowLevels
+    label.delete(lvlDO)
+    label.delete(lvlWO)
+    label.delete(lvlMO)
+    label.delete(lvlPDH)
+    label.delete(lvlPDL)
+    label.delete(lvlPWH)
+    label.delete(lvlPWL)
+    label.delete(lvlPMH)
+    label.delete(lvlPML)
     if showOpens
         // Slot 3
-        label.new(labelX(3), dOpen, "dO", style=label.style_label_left, color=color.new(dOpenColor, 30), textcolor=color.black, size=size.tiny)
-        label.new(labelX(3), wOpen, "wO", style=label.style_label_left, color=color.new(wOpenColor, 30), textcolor=color.black, size=size.tiny)
-        label.new(labelX(3), mOpen, "mO", style=label.style_label_left, color=color.new(mOpenColor, 30), textcolor=color.white, size=size.tiny)
+        lvlDO := label.new(labelX(3), dOpen, "dO", style=label.style_label_left, color=color.new(dOpenColor, 30), textcolor=color.black, size=size.tiny)
+        lvlWO := label.new(labelX(3), wOpen, "wO", style=label.style_label_left, color=color.new(wOpenColor, 30), textcolor=color.black, size=size.tiny)
+        lvlMO := label.new(labelX(3), mOpen, "mO", style=label.style_label_left, color=color.new(mOpenColor, 30), textcolor=color.white, size=size.tiny)
     if showPrevHL
-        label.new(labelX(3), prevDH, "PDH", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
-        label.new(labelX(3), prevDL, "PDL", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
-        label.new(labelX(3), prevWH, "PWH", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
-        label.new(labelX(3), prevWL, "PWL", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
-        label.new(labelX(3), prevMH, "PMH", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
-        label.new(labelX(3), prevML, "PML", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
+        lvlPDH := label.new(labelX(3), prevDH, "PDH", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
+        lvlPDL := label.new(labelX(3), prevDL, "PDL", style=label.style_label_left, color=color.new(prevDColor, 30), textcolor=color.black, size=size.tiny)
+        lvlPWH := label.new(labelX(3), prevWH, "PWH", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
+        lvlPWL := label.new(labelX(3), prevWL, "PWL", style=label.style_label_left, color=color.new(prevWColor, 30), textcolor=color.white, size=size.tiny)
+        lvlPMH := label.new(labelX(3), prevMH, "PMH", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
+        lvlPML := label.new(labelX(3), prevML, "PML", style=label.style_label_left, color=color.new(prevMColor, 30), textcolor=color.white, size=size.tiny)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  LIQUIDITY LEVELS  (1D / 7D / 30D rolling H/L) — redraw only on value change
@@ -1886,12 +2019,8 @@ liqMidCol    = input.color(color.new(color.gray, 50), "Midlines", group=grpLIQL)
 liqStyle = liqStyleIn == "Dashed" ? line.style_dashed : liqStyleIn == "Dotted" ? line.style_dotted : line.style_solid
 liqExt   = liqExtend ? extend.right : extend.none
 
-liq1Hi  = request.security(syminfo.tickerid, "D", high[1],                 lookahead=barmerge.lookahead_off)
-liq1Lo  = request.security(syminfo.tickerid, "D", low[1],                  lookahead=barmerge.lookahead_off)
-liq7Hi  = request.security(syminfo.tickerid, "D", ta.highest(high[1], 7),  lookahead=barmerge.lookahead_off)
-liq7Lo  = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   7),  lookahead=barmerge.lookahead_off)
-liq30Hi = request.security(syminfo.tickerid, "D", ta.highest(high[1], 30), lookahead=barmerge.lookahead_off)
-liq30Lo = request.security(syminfo.tickerid, "D", ta.lowest(low[1],   30), lookahead=barmerge.lookahead_off)
+// Batched into a single request.security on "D" (was 6 calls, now 1).
+[liq1Hi, liq1Lo, liq7Hi, liq7Lo, liq30Hi, liq30Lo] = request.security(syminfo.tickerid, "D", [high[1], low[1], ta.highest(high[1], 7), ta.lowest(low[1], 7), ta.highest(high[1], 30), ta.lowest(low[1], 30)], lookahead=barmerge.lookahead_off)
 
 var line ln1Hi  = na
 var line ln1Lo  = na
@@ -2024,6 +2153,7 @@ htfOBLen     = input.int(5,      "HTF swing lookback",  group=grpHTFOB, minval=2
 htfOBMax     = input.int(2,      "Max HTF OBs / side",  group=grpHTFOB, minval=1, maxval=5)
 htfOBBullCol = input.color(color.new(#1565C0, 60), "HTF Bull OB", group=grpHTFOB)
 htfOBBearCol = input.color(color.new(#B71C1C, 60), "HTF Bear OB", group=grpHTFOB)
+htfConfirm   = input.bool(true,  "Wait for bar close (reduce repaint)", group=grpHTFOB, tooltip="ON: HTF order-block boxes and HTF-FVG highlights are only committed when the current chart bar closes, removing intrabar flicker.\nNote: HTF data can still settle when the higher-timeframe candle itself closes — this removes chart-bar flicker, not 100% of MTF repaint.")
 
 detectHTFOB(int len) =>
     pivH = ta.pivothigh(high, len, len)
@@ -2080,6 +2210,10 @@ var htfOBBearScore = array.new_int()
 
 chartBelowHTF = timeframe.in_seconds() < timeframe.in_seconds(htfOBTF)
 
+// Commit gate: when htfConfirm is on, only draw/commit HTF zones on a closed
+// chart bar (kills intrabar flicker). On history every bar is confirmed.
+htfCommitOK = not htfConfirm or barstate.isconfirmed
+
 newHTFBullBOS = htfBullBOS and not nz(htfBullBOS[1], false) and not na(htfBOBT)
 newHTFBearBOS = htfBearBOS and not nz(htfBearBOS[1], false) and not na(htfBeOBT)
 
@@ -2100,7 +2234,7 @@ htfOBNearLiquidity(price) =>
                 break
     found
 
-if showHTFOB and chartBelowHTF and newHTFBullBOS
+if showHTFOB and chartBelowHTF and newHTFBullBOS and htfCommitOK
     while array.size(htfOBBullBoxes) >= htfOBMax
         box.delete(array.shift(htfOBBullBoxes))
         array.shift(htfOBBullHi)
@@ -2124,7 +2258,7 @@ if showHTFOB and chartBelowHTF and newHTFBullBOS
         scoreTxt = score > 0 ? " ★" + str.tostring(score) : ""
         label.new(time, htfBOBHi, htfOBTF + "OB" + scoreTxt, xloc=xloc.bar_time, style=label.style_label_down, color=color.new(htfOBBullCol, 20), textcolor=color.white, size=size.tiny)
 
-if showHTFOB and chartBelowHTF and newHTFBearBOS
+if showHTFOB and chartBelowHTF and newHTFBearBOS and htfCommitOK
     while array.size(htfOBBearBoxes) >= htfOBMax
         box.delete(array.shift(htfOBBearBoxes))
         array.shift(htfOBBearHi)
@@ -2199,15 +2333,15 @@ htfBearFVG = not na(htfL2) and not na(htfH0) and (htfL2 - htfH0) > 0
 inHTFBullFVG = showHTFFVG and htfBullFVG and close >= htfH2 and close <= htfL0
 inHTFBearFVG = showHTFFVG and htfBearFVG and close >= htfH0 and close <= htfL2
 
-bgcolor(showHTFFVG and inHTFBullFVG ? color.new(htfFVGBull, 92) : na, title="HTF Bull FVG bg")
-bgcolor(showHTFFVG and inHTFBearFVG ? color.new(htfFVGBear, 92) : na, title="HTF Bear FVG bg")
+bgcolor(showHTFFVG and inHTFBullFVG and htfCommitOK ? color.new(htfFVGBull, 92) : na, title="HTF Bull FVG bg")
+bgcolor(showHTFFVG and inHTFBearFVG and htfCommitOK ? color.new(htfFVGBear, 92) : na, title="HTF Bear FVG bg")
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  HTF PREMIUM / DISCOUNT  (proper HTF range, not LTF mid)
 // ══════════════════════════════════════════════════════════════════════════════
 
-htfRangeHi = request.security(syminfo.tickerid, htfOBTF, ta.highest(high[1], 20), lookahead=barmerge.lookahead_off)
-htfRangeLo = request.security(syminfo.tickerid, htfOBTF, ta.lowest(low[1],   20), lookahead=barmerge.lookahead_off)
+// Batched into a single request.security (was 2 calls, now 1).
+[htfRangeHi, htfRangeLo] = request.security(syminfo.tickerid, htfOBTF, [ta.highest(high[1], 20), ta.lowest(low[1], 20)], lookahead=barmerge.lookahead_off)
 htfMid     = math.avg(htfRangeHi, htfRangeLo)
 inHTFDiscount = not na(htfMid) and close < htfMid
 inHTFPremium  = not na(htfMid) and close > htfMid
@@ -2329,7 +2463,7 @@ inPremium  = close > swingMid
 inDiscount = close < swingMid
 priceLoc   = swingHi != swingLo ? math.abs(close - swingMid) / (swingHi - swingLo) * 100.0 : 0.0
 
-var table dashC = table.new(dashPosC, 2, 10, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
+var table dashC = table.new(dashPosC, 2, 11, bgcolor=color.new(#0A0A0A, 10), border_width=1, frame_color=color.new(color.gray, 50), frame_width=1, border_color=color.new(color.gray, 70))
 
 if showDashboardC and barstate.islast
     headerBg = color.new(#1A1A2E, 0)
@@ -2382,6 +2516,12 @@ if showDashboardC and barstate.islast
 
     table.cell(dashC, 0, 9, "ATR(14)", text_color=color.white, text_size=dashSzC)
     table.cell(dashC, 1, 9, str.tostring(atr14, format.mintick), text_color=color.new(color.gray, 0), text_size=dashSzC)
+
+    smActive = inNY ? "NY" : inAsia ? "ASIA" : inLondon ? "LDN" : ""
+    smTxt = na(sessMoveATRnow) ? "-" : smActive + " " + (sessMoveATRnow >= 0 ? "+" : "") + str.tostring(sessMoveATRnow, "#.0") + "x"
+    smCol = na(sessMoveATRnow) ? color.gray : sessMoveATRnow >= 0 ? smUpCol : smDnCol
+    table.cell(dashC, 0, 10, "Session move", text_color=color.white, text_size=dashSzC)
+    table.cell(dashC, 1, 10, smTxt, text_color=smCol, text_size=dashSzC)
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ALERTS  (Part 2 — alertcondition() variants for legacy users)
