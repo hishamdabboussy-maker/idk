@@ -43,6 +43,41 @@ indicator("SMC v21 Full Suite — Structure, Zones, Context & HTF", overlay=true
 //  GLOBAL DISPLAY  (merged — serves both halves)
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  PROFILE / AUTO-TUNE   (pick an asset class → the indicator re-tunes itself)
+//
+//  Leave on "Manual" to use every input exactly as you set it (legacy behavior).
+//  Pick a profile and a curated set of high-impact settings is overridden to
+//  sensible values for that asset class, and a few length/window settings scale
+//  with the chart timeframe automatically. Everything else stays manual.
+//
+//  Overridden when a profile is active: sessions/killzone relevance, HTF
+//  timeframe, swing lookbacks, liquidity tolerance mode, volume-confirmation
+//  on/off, SMT default symbol, displacement sensitivity, and a few bar-windows.
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpPROF = "Profile / Auto-Tune"
+profile = input.string("Manual", "Asset profile", group=grpPROF, options=["Manual","Indices/Futures (ES,NQ)","Forex majors","Commodities (Gold,Silver)","Crypto majors (BTC,ETH)","Crypto alts","Crypto micro-caps (shitcoins)"], tooltip="Manual = use all inputs as-is. Any other choice overrides a curated set of settings for that asset class.")
+autoScaleTF = input.bool(true, "Auto-scale lengths to chart timeframe", group=grpPROF, tooltip="When a profile is active, scale swing/window lengths and pick the HTF based on the chart's timeframe.")
+
+autoTune = profile != "Manual"
+pIsFut   = profile == "Indices/Futures (ES,NQ)"
+pIsFx    = profile == "Forex majors"
+pIsComm  = profile == "Commodities (Gold,Silver)"
+pIsCMaj  = profile == "Crypto majors (BTC,ETH)"
+pIsCAlt  = profile == "Crypto alts"
+pIsCMic  = profile == "Crypto micro-caps (shitcoins)"
+pCrypto  = pIsCMaj or pIsCAlt or pIsCMic
+
+// Timeframe bucket: 0 = <=3m, 1 = <=15m, 2 = <=1H, 3 = >1H
+tfSecP   = timeframe.in_seconds()
+tfBucket = tfSecP <= 180 ? 0 : tfSecP <= 900 ? 1 : tfSecP <= 3600 ? 2 : 3
+// Auto HTF: intraday -> 4H, hourly -> Daily, higher -> Weekly
+autoHTF  = not autoScaleTF ? "240" : tfBucket <= 1 ? "240" : tfBucket == 2 ? "D" : "W"
+// Auto length multiplier (micro-caps run wider to cut noise)
+lenScale = not autoScaleTF ? 1.0 : tfBucket == 0 ? 0.8 : tfBucket == 1 ? 1.0 : tfBucket == 2 ? 1.4 : 2.0
+micWide  = pIsCMic ? 1.6 : pIsCAlt ? 1.25 : 1.0
+
 grpDISP = "Display & Readability"
 extendBoxes  = input.bool(true,  "Extend zones to right",      group=grpDISP)
 proxEnable   = input.bool(true,  "Hide far zones (proximity)", group=grpDISP)
@@ -103,8 +138,11 @@ labelX(slot) => bar_index + slot * labelStagger
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpKZ = "Sessions / Killzones"
-showKZ        = input.bool(true,  "Show session highlights",                group=grpKZ)
-useKillzoneOB = input.bool(true,  "Tag OBs/BBs formed in killzones with ★",  group=grpKZ)
+showKZIn        = input.bool(true,  "Show session highlights",                group=grpKZ)
+useKillzoneOBIn = input.bool(true,  "Tag OBs/BBs formed in killzones with ★",  group=grpKZ)
+sessRelevant  = pIsFut or pIsFx or pIsComm or pIsCMaj
+showKZ        = autoTune ? sessRelevant : showKZIn
+useKillzoneOB = autoTune ? sessRelevant : useKillzoneOBIn
 sessTZ        = input.string("America/New_York", "Session timezone", group=grpKZ, options=["UTC","America/New_York","Europe/London","Asia/Tokyo","exchange"])
 asiaSess      = input.session("2000-0000", "Asia session",        group=grpKZ, tooltip="Default times are NY-time. Adjust if the timezone is changed.")
 londonSess    = input.session("0200-0500", "London session / KZ", group=grpKZ)
@@ -136,8 +174,10 @@ grpMS = "Market Structure"
 showStruct      = input.bool(true,  "Show market structure",       group=grpMS)
 useBodyBreak    = input.bool(false, "Body-break (else close-break)", group=grpMS)
 bosATRFilter    = input.float(0.0,  "Min BOS distance x ATR (0=off)", group=grpMS, minval=0.0, maxval=3.0, step=0.05)
-internalLen     = input.int(5,      "Internal swing lookback",     group=grpMS, minval=2, maxval=30)
-externalLen     = input.int(25,     "External swing lookback",     group=grpMS, minval=10, maxval=100)
+internalLenIn   = input.int(5,      "Internal swing lookback",     group=grpMS, minval=2, maxval=30)
+externalLenIn   = input.int(25,     "External swing lookback",     group=grpMS, minval=10, maxval=100)
+internalLen = autoTune ? math.max(2,  int(math.round(5  * lenScale * micWide))) : internalLenIn
+externalLen = autoTune ? math.max(10, int(math.round(25 * lenScale * micWide))) : externalLenIn
 showInternal    = input.bool(true,  "Show internal BOS/CHoCH",     group=grpMS)
 showExternal    = input.bool(true,  "Show external BOS/CHoCH",     group=grpMS)
 showSwingPoints = input.bool(true,  "Show swing H/L labels",       group=grpMS)
@@ -502,7 +542,8 @@ grpBB = "Breaker Blocks"
 showBB        = input.bool(true,  "Show Breaker Blocks",                   group=grpBB)
 bbMaxBoxes    = input.int(4,      "Max BBs per side",                      group=grpBB, minval=1, maxval=15)
 bbRequireBOS  = input.bool(true,  "Require confirming BOS (recommended)",  group=grpBB, tooltip="ON  = ICT-correct: an OB mitigation only becomes a BB once a real Break-of-Structure prints in the new direction within the confirmation window. Major noise reduction.\nOFF = legacy v21.0: every OB mitigation immediately spawns a BB (very noisy on chop).")
-bbConfirmBars = input.int(30,     "BOS confirmation window (bars)",        group=grpBB, minval=3, maxval=200, tooltip="Max bars between OB mitigation and the confirming BOS. Larger = more BBs but lower quality. 30 ≈ several hours on 15m.")
+bbConfirmBarsIn = input.int(30,     "BOS confirmation window (bars)",        group=grpBB, minval=3, maxval=200, tooltip="Max bars between OB mitigation and the confirming BOS. Larger = more BBs but lower quality. 30 ≈ several hours on 15m.")
+bbConfirmBars = autoTune ? math.max(3, int(math.round(30 * lenScale))) : bbConfirmBarsIn
 bbDispATR     = input.float(0.5,  "Min BOS displacement x ATR (0=off)",    group=grpBB, minval=0.0, maxval=5.0, step=0.1, tooltip="Reject the BOS as confirmation unless that candle's range is at least N x ATR(14). Filters weak/lazy breaks.")
 bbMinSizeATR  = input.float(0.0,  "Min BB size x ATR (0=off)",             group=grpBB, minval=0.0, maxval=5.0, step=0.05, tooltip="Reject the resulting BB if it's smaller than N x ATR(14). Filters tiny noisy zones.")
 bbMitigMode   = input.string("Close", "Mitigation by",                     group=grpBB, options=["Wick","Close"])
@@ -1046,7 +1087,8 @@ if showIFVG and array.size(ifvgBearBoxes) > 0
 
 grpDISP2 = "Displacement"
 showDisp = input.bool(true,  "Highlight displacement candles", group=grpDISP2)
-dispMul  = input.float(1.7,  "Min x ATR(14)",                  group=grpDISP2, minval=1.0, maxval=5.0, step=0.1)
+dispMulIn = input.float(1.7,  "Min x ATR(14)",                  group=grpDISP2, minval=1.0, maxval=5.0, step=0.1)
+dispMul = autoTune ? (pIsCMic ? 2.2 : pIsCAlt ? 2.0 : pIsCMaj ? 1.8 : 1.7) : dispMulIn
 dispBullCol = input.color(color.new(#69F0AE, 0), "Bull displacement", group=grpDISP2)
 dispBearCol = input.color(color.new(#FF5252, 0), "Bear displacement", group=grpDISP2)
 
@@ -1453,8 +1495,10 @@ if showVIBox and array.size(viBearBoxes) > 0
 
 grpLIQ = "Liquidity (EQH/EQL)"
 showLIQ      = input.bool(true,  "Show EQH/EQL",            group=grpLIQ)
-liqLookback  = input.int(10,     "Pivot lookback",          group=grpLIQ, minval=3, maxval=50)
-liqTolMode   = input.string("Percent", "Tolerance mode", group=grpLIQ, options=["Percent","Ticks","ATR"], tooltip="Percent: % of price (suits FX/index)\nTicks: number of mintick units (suits any asset)\nATR: fraction of ATR(14)")
+liqLookbackIn = input.int(10,     "Pivot lookback",          group=grpLIQ, minval=3, maxval=50)
+liqTolModeIn  = input.string("Percent", "Tolerance mode", group=grpLIQ, options=["Percent","Ticks","ATR"], tooltip="Percent: % of price (suits FX/index)\nTicks: number of mintick units (suits any asset)\nATR: fraction of ATR(14)")
+liqLookback = autoTune ? math.max(3, int(math.round(10 * lenScale))) : liqLookbackIn
+liqTolMode  = autoTune ? (pIsFx ? "Percent" : "ATR") : liqTolModeIn
 liqTolerance = input.float(0.05, "Tolerance (Percent mode)", group=grpLIQ, minval=0.001, maxval=2.0, step=0.005)
 liqTolTicks  = input.int(50,     "Tolerance (Ticks mode)",  group=grpLIQ, minval=1, maxval=10000)
 liqTolATR    = input.float(0.10, "Tolerance (ATR mode)",    group=grpLIQ, minval=0.01, maxval=2.0, step=0.01)
@@ -2017,7 +2061,8 @@ if (liqSweep1H or liqSweep1L or liqSweep7H or liqSweep7L or liqSweep30H or liqSw
 
 grpHTFOB = "HTF Order Blocks"
 showHTFOB    = input.bool(true,  "Show HTF OBs",        group=grpHTFOB)
-htfOBTF      = input.timeframe("240", "HTF timeframe",  group=grpHTFOB)
+htfOBTFIn    = input.timeframe("240", "HTF timeframe",  group=grpHTFOB)
+htfOBTF = autoTune ? autoHTF : htfOBTFIn
 htfOBLen     = input.int(5,      "HTF swing lookback",  group=grpHTFOB, minval=2, maxval=20)
 htfOBMax     = input.int(2,      "Max HTF OBs / side",  group=grpHTFOB, minval=1, maxval=5)
 htfOBBullCol = input.color(color.new(#1565C0, 60), "HTF Bull OB", group=grpHTFOB)
@@ -2192,7 +2237,8 @@ if showHTFOB and array.size(htfOBBearBoxes) > 0
 
 grpHTFFVG = "HTF FVG"
 showHTFFVG = input.bool(true,  "Show HTF FVGs", group=grpHTFFVG)
-htfFVGTF   = input.timeframe("240", "HTF FVG timeframe", group=grpHTFFVG)
+htfFVGTFIn = input.timeframe("240", "HTF FVG timeframe", group=grpHTFFVG)
+htfFVGTF = autoTune ? autoHTF : htfFVGTFIn
 htfFVGBull = input.color(color.new(#00C853, 75), "HTF Bull FVG", group=grpHTFFVG)
 htfFVGBear = input.color(color.new(#FF1744, 75), "HTF Bear FVG", group=grpHTFFVG)
 
@@ -2264,7 +2310,8 @@ if emaBullCross or emaBearCross
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpVOL = "Volume Confirmation"
-useVolConf     = input.bool(true,  "Compute volume confirmation",         group=grpVOL)
+useVolConfIn   = input.bool(true,  "Compute volume confirmation",         group=grpVOL)
+useVolConf = autoTune ? (pIsFx ? false : true) : useVolConfIn
 volMode        = input.string("Relative volume", "Conviction metric", group=grpVOL, options=["Relative volume","Delta proxy","Both"])
 relVolLen      = input.int(20,     "Relative-volume SMA length",          group=grpVOL, minval=2, maxval=200)
 relVolMin      = input.float(1.5,  "Min relative volume (x average)",     group=grpVOL, minval=0.5, maxval=10.0, step=0.1)
@@ -2296,8 +2343,10 @@ volConfBear = not useVolConf ? true : volMode == "Relative volume" ? relVolOK : 
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpSMT = "SMT Divergence"
-useSMT         = input.bool(true,  "Enable SMT divergence",              group=grpSMT)
-smtSym         = input.symbol("BINANCE:ETHUSDT", "Comparison symbol",    group=grpSMT, tooltip="A correlated instrument. Examples: BTC vs ETH, ES vs NQ, EURUSD vs GBPUSD, an asset vs DXY (inverse). Set this to match your chart.")
+useSMTIn       = input.bool(true,  "Enable SMT divergence",              group=grpSMT)
+smtSymIn       = input.symbol("BINANCE:ETHUSDT", "Comparison symbol",    group=grpSMT, tooltip="A correlated instrument. Examples: BTC vs ETH, ES vs NQ, EURUSD vs GBPUSD, an asset vs DXY (inverse). Set this to match your chart.")
+useSMT = autoTune ? true : useSMTIn
+smtSym = autoTune ? (pIsFut ? "CME_MINI:NQ1!" : pIsFx ? "TVC:DXY" : pIsComm ? "TVC:DXY" : pIsCMaj ? "BINANCE:ETHUSDT" : "BINANCE:BTCUSDT") : smtSymIn
 smtLen         = input.int(5,      "SMT pivot lookback",                 group=grpSMT, minval=2, maxval=30)
 smtRecentBars  = input.int(10,     "SMT recency window (bars)",          group=grpSMT, minval=1, maxval=50, tooltip="How long a confirmed SMT counts as a live confluence.")
 smtMarks       = input.bool(true,  "Show SMT markers",                   group=grpSMT)
@@ -2360,7 +2409,8 @@ smtBearRecent = (bar_index - lastBearSMTBar) <= smtRecentBars
 // ══════════════════════════════════════════════════════════════════════════════
 
 grpSIG = "Composite Signals"
-sigLookback = input.int(10, "Sweep -> CHoCH lookback (bars)", group=grpSIG, minval=2, maxval=50)
+sigLookbackIn = input.int(10, "Sweep -> CHoCH lookback (bars)", group=grpSIG, minval=2, maxval=50)
+sigLookback = autoTune ? math.max(2, int(math.round(10 * lenScale))) : sigLookbackIn
 showRevMark = input.bool(true, "Show reversal markers", group=grpSIG)
 useHTFForSetup = input.bool(true, "Use HTF discount/premium for A+ setup (recommended)", group=grpSIG)
 
@@ -2412,7 +2462,8 @@ if compEvt != ""
 
 grpSTAT = "Signal Expectancy (stats)"
 showStats    = input.bool(true,  "Show expectancy table",       group=grpSTAT)
-statHorizon  = input.int(20,     "Forward horizon (bars)",      group=grpSTAT, minval=3, maxval=200, tooltip="Bars to follow each signal before scoring its MFE/MAE.")
+statHorizonIn = input.int(20,     "Forward horizon (bars)",      group=grpSTAT, minval=3, maxval=200, tooltip="Bars to follow each signal before scoring its MFE/MAE.")
+statHorizon = autoTune ? math.max(3, int(math.round(20 * lenScale))) : statHorizonIn
 statWinRatio = input.float(1.0,  "Win = MFE / MAE >=",          group=grpSTAT, minval=0.2, maxval=5.0, step=0.1)
 statPosIn    = input.string("bottom_right", "Table position", group=grpSTAT, options=["top_right","top_left","middle_right","middle_left","bottom_right","bottom_left"])
 statSizeIn   = input.string("tiny", "Text size", group=grpSTAT, options=["tiny","small","normal"])
