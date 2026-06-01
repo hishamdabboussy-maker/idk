@@ -16,7 +16,6 @@ def _load_dotenv() -> None:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        # strip inline comments and surrounding quotes
         val = val.split("#", 1)[0].strip().strip('"').strip("'")
         os.environ.setdefault(key, val)
 
@@ -35,13 +34,15 @@ class Settings:
     SESSION_SECRET: str = os.environ.get("SESSION_SECRET", "dev-insecure-secret-change-me")
 
     SCAN_INTERVAL_SECONDS: int = int(os.environ.get("SCAN_INTERVAL_SECONDS", "120"))
-    DEX_QUERIES: list[str] = _csv("DEX_QUERIES", "SOL/USDC,WETH/USDC,bonk,pepe")
-    CHAINS: list[str] = _csv("CHAINS", "solana,ethereum,base")
-    MIN_LIQUIDITY_USD: float = float(os.environ.get("MIN_LIQUIDITY_USD", "15000"))
-    MAX_PAIR_AGE_HOURS: float = float(os.environ.get("MAX_PAIR_AGE_HOURS", "720"))
 
+    # Binance spot scanning
+    MIN_QUOTE_VOL_USD: float = float(os.environ.get("MIN_QUOTE_VOL_USD", "2000000"))  # 24h USDT vol floor
+    ENRICH_TOP_N: int = int(os.environ.get("ENRICH_TOP_N", "120"))   # how many symbols to pull klines for
+    MAX_RESULTS: int = int(os.environ.get("MAX_RESULTS", "100"))
+    KLINE_INTERVAL: str = os.environ.get("KLINE_INTERVAL", "1h")
+
+    # Hyperliquid whale wallets (optional)
     HL_WHALE_ADDRESSES: list[str] = _csv("HL_WHALE_ADDRESSES", "")
-    USE_RUGCHECK: bool = os.environ.get("USE_RUGCHECK", "false").lower() == "true"
 
 
 settings = Settings()

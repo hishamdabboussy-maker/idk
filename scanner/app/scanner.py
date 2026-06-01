@@ -1,5 +1,5 @@
-"""Orchestrates a scan cycle: fetch -> score -> cache. Thread/async safe enough
-for a single-process MVP (one writer, many readers of an immutable snapshot)."""
+"""Orchestrates a scan cycle: fetch Binance tickers -> shortlist -> enrich the
+most active with klines -> score -> cache. Single writer, immutable snapshot."""
 from __future__ import annotations
 
 import time
@@ -8,12 +8,12 @@ import httpx
 
 from .config import settings
 from .scoring import score_all
-from .sources import dexscreener, hyperliquid
+from .sources import binance, hyperliquid
 
 # Immutable snapshot replaced atomically after each scan.
 STORE: dict = {
     "updated_at": 0.0,
-    "tokens": [],       # scored alt/micro-cap pairs (sorted by pump_score)
+    "coins": [],        # scored Binance spot coins (sorted by pump_score)
     "perp_heat": [],    # hyperliquid OI/funding table
     "whales": [],       # tracked wallet positions
     "scanning": False,
@@ -23,34 +23,45 @@ STORE: dict = {
 
 async def run_scan() -> None:
     STORE["scanning"] = True
-    err = ""
     try:
         async with httpx.AsyncClient() as client:
-            raw = await dexscreener.fetch_all(client, settings.DEX_QUERIES)
-            tokens = score_all(
-                raw,
-                min_liq=settings.MIN_LIQUIDITY_USD,
-                chains=settings.CHAINS,
-                max_age_h=settings.MAX_PAIR_AGE_HOURS,
+            # 1) one call: 24h stats for every tradable USDT spot pair
+            tickers = await binance.tickers_24h(client)
+
+            # 2) shortlist by 24h quote volume, then by 24h move, to bound
+            #    how many per-symbol kline calls we make (rate-limit friendly)
+            tickers = [t for t in tickers if t["quote_vol"] >= settings.MIN_QUOTE_VOL_USD]
+            tickers.sort(key=lambda t: t["quote_vol"], reverse=True)
+            shortlist = tickers[: settings.ENRICH_TOP_N]
+
+            # 3) enrich shortlist with recent klines (volume surge + momentum)
+            await binance.enrich_momentum(client, shortlist, interval=settings.KLINE_INTERVAL)
+
+            coins = score_all(
+                shortlist,
+                min_quote_vol=settings.MIN_QUOTE_VOL_USD,
+                max_results=settings.MAX_RESULTS,
             )
+
+            # 4) Hyperliquid perp context + optional whale wallets
             heat = await hyperliquid.perp_heat(client)
             whales = (
                 await hyperliquid.whale_positions(client, settings.HL_WHALE_ADDRESSES)
                 if settings.HL_WHALE_ADDRESSES
                 else []
             )
+
         STORE.update(
             {
                 "updated_at": time.time(),
-                "tokens": tokens,
+                "coins": coins,
                 "perp_heat": heat,
                 "whales": whales,
                 "error": "",
             }
         )
     except Exception as e:  # never let the loop die
-        err = f"{type(e).__name__}: {e}"
-        STORE["error"] = err
+        STORE["error"] = f"{type(e).__name__}: {e}"
     finally:
         STORE["scanning"] = False
 

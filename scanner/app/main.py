@@ -70,15 +70,15 @@ async def dashboard(request: Request):
         "dashboard.html",
         {
             "request": request,
-            "tokens": snap["tokens"][:60],
+            "coins": snap["coins"][:80],
             "heat": snap["perp_heat"][:25],
             "whales": snap["whales"][:40],
             "updated_age": age,
             "scanning": snap["scanning"],
             "error": snap["error"],
             "interval": settings.SCAN_INTERVAL_SECONDS,
-            "chains": ", ".join(settings.CHAINS) or "all",
-            "min_liq": settings.MIN_LIQUIDITY_USD,
+            "min_vol": settings.MIN_QUOTE_VOL_USD,
+            "kline_interval": settings.KLINE_INTERVAL,
         },
     )
 
@@ -92,7 +92,7 @@ async def api_scan(request: Request):
         "updated_at": snap["updated_at"],
         "scanning": snap["scanning"],
         "error": snap["error"],
-        "tokens": snap["tokens"][:100],
+        "coins": snap["coins"][:100],
         "perp_heat": snap["perp_heat"][:50],
         "whales": snap["whales"],
     }
