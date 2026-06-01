@@ -1,0 +1,27 @@
+# Render Blueprint — one-click deploy.
+# In Render: New + > Blueprint > connect this repo > it reads this file.
+# Or set Root Directory = "scanner" in a manual Web Service.
+services:
+  - type: web
+    name: pump-whale-scanner
+    runtime: python
+    rootDir: scanner
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: ADMIN_USERNAME
+        sync: false          # set in Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true  # Render generates a strong random value
+      - key: SCAN_INTERVAL_SECONDS
+        value: "120"
+      - key: CHAINS
+        value: "solana,ethereum,base"
+      - key: MIN_LIQUIDITY_USD
+        value: "15000"
+      - key: PYTHON_VERSION
+        value: "3.11.9"

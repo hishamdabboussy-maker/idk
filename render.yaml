@@ -1,0 +1,28 @@
+# Render Blueprint (repo root) — so "New + > Blueprint" works with the default
+# Blueprint Path (render.yaml). The app itself lives in the scanner/ subdir,
+# which `rootDir` points Render at. A duplicate copy also exists at
+# scanner/render.yaml for the "Blueprint Path = scanner/render.yaml" workflow.
+services:
+  - type: web
+    name: pump-whale-scanner
+    runtime: python
+    rootDir: scanner
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: ADMIN_USERNAME
+        sync: false          # set in Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true  # Render generates a strong random value
+      - key: SCAN_INTERVAL_SECONDS
+        value: "120"
+      - key: CHAINS
+        value: "solana,ethereum,base"
+      - key: MIN_LIQUIDITY_USD
+        value: "15000"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
