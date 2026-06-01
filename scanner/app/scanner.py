@@ -41,6 +41,7 @@ async def run_scan() -> None:
                 shortlist,
                 min_quote_vol=settings.MIN_QUOTE_VOL_USD,
                 max_results=settings.MAX_RESULTS,
+                bias_mode=settings.BIAS_MODE,
             )
 
             # 4) Hyperliquid perp context + optional whale wallets

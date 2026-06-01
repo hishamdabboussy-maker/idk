@@ -79,6 +79,7 @@ async def dashboard(request: Request):
             "interval": settings.SCAN_INTERVAL_SECONDS,
             "min_vol": settings.MIN_QUOTE_VOL_USD,
             "kline_interval": settings.KLINE_INTERVAL,
+            "bias_mode": settings.BIAS_MODE,
         },
     )
 

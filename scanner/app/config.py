@@ -40,6 +40,9 @@ class Settings:
     ENRICH_TOP_N: int = int(os.environ.get("ENRICH_TOP_N", "120"))   # how many symbols to pull klines for
     MAX_RESULTS: int = int(os.environ.get("MAX_RESULTS", "100"))
     KLINE_INTERVAL: str = os.environ.get("KLINE_INTERVAL", "1h")
+    # Directional read: "reversion" (near low=LONG / near high=SHORT) or
+    # "momentum" (near high+rising=LONG / near low+falling=SHORT).
+    BIAS_MODE: str = os.environ.get("BIAS_MODE", "reversion").strip().lower()
 
     # Hyperliquid whale wallets (optional)
     HL_WHALE_ADDRESSES: list[str] = _csv("HL_WHALE_ADDRESSES", "")

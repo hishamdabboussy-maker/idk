@@ -13,7 +13,7 @@
     {% if scanning %}<span class="dot live"></span> scanning…{% else %}
       <span class="dot ok"></span>
       updated {{ updated_age if updated_age is not none else "—" }}s ago{% endif %}
-    · refresh {{ interval }}s · Binance USDT spot · min 24h vol ${{ "{:,.0f}".format(min_vol) }}
+    · refresh {{ interval }}s · Binance USDT spot · bias: {{ bias_mode }} · min 24h vol ${{ "{:,.0f}".format(min_vol) }}
     <button id="rescan">Rescan now</button>
     <a class="logout" href="/logout">Logout</a>
   </div>

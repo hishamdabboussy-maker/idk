@@ -12,7 +12,7 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
-def score_coin(c: dict) -> dict:
+def score_coin(c: dict, bias_mode: str = "reversion") -> dict:
     # --- components (0..1) ---------------------------------------------------
     # 1) Volume surge: last 1h candle quote-vol vs avg of prior 23h.
     surge = _clamp((c.get("vol_surge", 0.0) - 1.0) / 3.0)  # 1x->0, 4x+->1
@@ -30,13 +30,24 @@ def score_coin(c: dict) -> dict:
 
     score = 100.0 * (0.40 * surge + 0.28 * mom + 0.17 * edge + 0.15 * vol)
 
-    # Directional read for the signal.
-    if mom_recent > 0 and rp >= 0.55:
-        direction = "LONG"
-    elif mom_recent < 0 and rp <= 0.45:
-        direction = "SHORT"
-    else:
-        direction = "—"
+    # Directional read — depends on the chosen trading philosophy:
+    #   reversion : near 24h LOW -> LONG (buy the dip), near HIGH -> SHORT (fade).
+    #   momentum  : near 24h HIGH + rising -> LONG (ride breakout),
+    #               near LOW + falling -> SHORT (ride breakdown).
+    if bias_mode == "momentum":
+        if mom_recent > 0 and rp >= 0.55:
+            direction = "LONG"
+        elif mom_recent < 0 and rp <= 0.45:
+            direction = "SHORT"
+        else:
+            direction = "—"
+    else:  # reversion (default)
+        if rp <= 0.45:
+            direction = "LONG"
+        elif rp >= 0.55:
+            direction = "SHORT"
+        else:
+            direction = "—"
 
     # Plain-language tags.
     tags: list[str] = []
@@ -59,11 +70,11 @@ def score_coin(c: dict) -> dict:
     }
 
 
-def score_all(coins: list[dict], min_quote_vol: float, max_results: int = 100) -> list[dict]:
+def score_all(coins: list[dict], min_quote_vol: float, max_results: int = 100, bias_mode: str = "reversion") -> list[dict]:
     out: list[dict] = []
     for c in coins:
         if c.get("quote_vol", 0.0) < min_quote_vol:
             continue
-        out.append(score_coin(c))
+        out.append(score_coin(c, bias_mode=bias_mode))
     out.sort(key=lambda x: x["pump_score"], reverse=True)
     return out[:max_results]
