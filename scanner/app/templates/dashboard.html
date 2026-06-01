@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pump / Whale Scanner</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🐋 Pump / Whale Scanner</div>
+  <div class="status">
+    {% if scanning %}<span class="dot live"></span> scanning…{% else %}
+      <span class="dot ok"></span>
+      updated {{ updated_age if updated_age is not none else "—" }}s ago{% endif %}
+    · refresh {{ interval }}s · chains: {{ chains }} · min liq ${{ "{:,.0f}".format(min_liq) }}
+    <button id="rescan">Rescan now</button>
+    <a class="logout" href="/logout">Logout</a>
+  </div>
+</header>
+
+{% if error %}<div class="banner err">last scan error: {{ error }}</div>{% endif %}
+
+<main>
+  <section>
+    <h2>Alt / micro-cap pump radar <span class="muted small">(DexScreener · sorted by pump score)</span></h2>
+    <table class="grid">
+      <thead><tr>
+        <th>#</th><th>Token</th><th>Chain</th><th class="r">Price</th><th class="r">Liq</th>
+        <th class="r">Vol 24h</th><th class="r">1h%</th><th class="r">24h%</th>
+        <th class="r">Buy%</th><th class="r">Age</th><th class="r">Pump</th><th>Risk</th>
+      </tr></thead>
+      <tbody>
+      {% for t in tokens %}
+        <tr>
+          <td class="muted">{{ loop.index }}</td>
+          <td><a href="{{ t.url }}" target="_blank" rel="noopener">{{ t.symbol }}</a>
+              <span class="muted small">{{ t.name[:18] }}</span></td>
+          <td>{{ t.chain }}</td>
+          <td class="r">${{ "%.6g"|format(t.price_usd) }}</td>
+          <td class="r">${{ "{:,.0f}".format(t.liq_usd) }}</td>
+          <td class="r">${{ "{:,.0f}".format(t.vol_h24) }}</td>
+          <td class="r {{ 'up' if t.chg_h1>=0 else 'dn' }}">{{ "%+.1f"|format(t.chg_h1) }}</td>
+          <td class="r {{ 'up' if t.chg_h24>=0 else 'dn' }}">{{ "%+.1f"|format(t.chg_h24) }}</td>
+          <td class="r">{{ "%.0f"|format(t.buy_ratio_h1*100) }}%</td>
+          <td class="r">{{ "%.0fh"|format(t.age_hours) if t.age_hours is not none else "—" }}</td>
+          <td class="r"><b class="pump">{{ t.pump_score }}</b></td>
+          <td><span class="badge {{ t.risk_label|lower }}" title="{{ t.risk_notes }}">{{ t.risk_label }}</span></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="12" class="muted center">No tokens yet — first scan may still be running. Hit “Rescan now”.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <div class="two-col">
+    <section>
+      <h2>Perp heat <span class="muted small">(Hyperliquid · OI / funding / volume)</span></h2>
+      <table class="grid">
+        <thead><tr><th>Coin</th><th class="r">24h%</th><th class="r">Funding%</th><th class="r">OI</th><th class="r">Day Vol</th></tr></thead>
+        <tbody>
+        {% for h in heat %}
+          <tr>
+            <td>{{ h.coin }}</td>
+            <td class="r {{ 'up' if h.chg_24h>=0 else 'dn' }}">{{ "%+.1f"|format(h.chg_24h) }}</td>
+            <td class="r {{ 'up' if h.funding>=0 else 'dn' }}">{{ "%+.4f"|format(h.funding) }}</td>
+            <td class="r">${{ "{:,.0f}".format(h.oi_usd) }}</td>
+            <td class="r">${{ "{:,.0f}".format(h.day_ntl_vlm) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted center">No data.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Tracked whales <span class="muted small">(set HL_WHALE_ADDRESSES)</span></h2>
+      <table class="grid">
+        <thead><tr><th>Wallet</th><th>Coin</th><th>Side</th><th class="r">Value</th><th class="r">uPnL</th><th class="r">Lev</th></tr></thead>
+        <tbody>
+        {% for w in whales %}
+          <tr>
+            <td class="muted">{{ w.address }}</td>
+            <td>{{ w.coin }}</td>
+            <td class="{{ 'up' if w.side=='LONG' else 'dn' }}">{{ w.side }}</td>
+            <td class="r">${{ "{:,.0f}".format(w.position_value) }}</td>
+            <td class="r {{ 'up' if w.unrealized_pnl>=0 else 'dn' }}">${{ "{:,.0f}".format(w.unrealized_pnl) }}</td>
+            <td class="r">{{ w.leverage }}x</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted center">No tracked wallets configured.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <p class="muted small disclaimer">Public-data analytics / screener. “Pump score” = unusual activity & momentum; “risk” = trap likelihood. Read both. Micro-caps rug constantly — this is not financial advice.</p>
+</main>
+
+<script>
+document.getElementById('rescan').addEventListener('click', async (e) => {
+  e.target.disabled = true; e.target.textContent = 'scanning…';
+  try { await fetch('/api/rescan', {method:'POST'}); } catch (_) {}
+  setTimeout(() => location.reload(), 4000);
+});
+</script>
+</body>
+</html>
