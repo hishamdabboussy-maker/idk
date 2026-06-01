@@ -33,7 +33,64 @@ def _target(c: dict, direction: str) -> tuple[float, float]:
     return base, price * (1 + base / 100.0)
 
 
-def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None) -> dict:
+def _eta(c: dict, target_pct: float, kline_interval: str = "1h") -> str:
+    """Rough time-to-target estimate.
+
+    velocity = ATR% per candle (typical move per bar). bars = |target| / velocity,
+    then convert bars to a human duration using the scan's candle interval.
+    """
+    atr_pct = c.get("atr_pct", 0.0) or 0.0
+    if atr_pct <= 0:
+        return "—"
+    bars = abs(target_pct) / atr_pct
+    # minutes per candle from the interval string (e.g. 15m, 1h, 4h)
+    unit = kline_interval[-1]
+    qty = float(kline_interval[:-1] or 1)
+    per_min = qty * (1 if unit == "m" else 60 if unit == "h" else 1440 if unit == "d" else 60)
+    total_min = bars * per_min
+    if total_min < 90:
+        return f"~{total_min/60:.1f}h" if total_min >= 60 else f"~{total_min:.0f}m"
+    hours = total_min / 60.0
+    if hours < 36:
+        return f"~{hours:.0f}h"
+    return f"~{hours/24:.1f}d"
+
+
+def _entries(c: dict, direction: str) -> str:
+    """Suggested entry zone(s) as context-aware price levels.
+
+    LONG  -> buy a small pullback toward support (SMA20 / recent low band).
+    SHORT -> sell a small bounce toward resistance (SMA20 / recent high band).
+    Returns "now @P · pullback @P2" style text. Not advice — reference levels.
+    """
+    price = c.get("price", 0.0)
+    if price <= 0 or direction == "—":
+        return "—"
+    atr_pct = c.get("atr_pct", 0.0) or 1.0
+    sma_dist = c.get("sma_dist", 0.0) or 0.0
+    # SMA20 implied price from its % distance
+    sma_price = price / (1 + sma_dist / 100.0) if sma_dist != -100 else price
+    # a pullback/bounce of ~0.5 ATR from current price
+    step = price * (atr_pct * 0.5) / 100.0
+    if direction == "LONG":
+        pull = price - step
+        levels = [price, min(pull, sma_price) if sma_dist > 0 else pull]
+        return f"mkt ${_fmt(levels[0])} · dip ${_fmt(min(levels))}"
+    else:
+        bounce = price + step
+        levels = [price, max(bounce, sma_price) if sma_dist < 0 else bounce]
+        return f"mkt ${_fmt(levels[0])} · bounce ${_fmt(max(levels))}"
+
+
+def _fmt(x: float) -> str:
+    if x >= 100:
+        return f"{x:,.2f}"
+    if x >= 1:
+        return f"{x:.3f}"
+    return f"{x:.6g}"
+
+
+def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None, kline_interval: str = "1h") -> dict:
     rp = c.get("range_pos", 0.5)
     mom_recent = c.get("mom_recent", 0.0)
     rsi = c.get("rsi")
@@ -96,6 +153,8 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None)
         "direction": direction,
         "target_pct": round(target_pct, 1),
         "target_price": target_price,
+        "eta": _eta(c, target_pct, kline_interval),
+        "entry": _entries(c, direction),
         "whale": False,
     }
 
@@ -109,6 +168,8 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None)
         out["pump_score"] = 100.0 if side == "LONG" else 5.0
         tp, tpx = _target(c, side)
         out["target_pct"], out["target_price"] = round(tp, 1), tpx
+        out["eta"] = _eta(c, tp, kline_interval)
+        out["entry"] = _entries(c, side)
         whale_reason = (
             f"🐋 whale {side} {whale.get('address','')} "
             f"${whale.get('position_value',0):,.0f}"
@@ -129,6 +190,7 @@ def score_all(
     max_results: int = 100,
     bias_mode: str = "reversion",
     whale_map: dict[str, dict] | None = None,
+    kline_interval: str = "1h",
 ) -> list[dict]:
     """whale_map: {BASE_SYMBOL -> whale position dict} for tracked wallets."""
     whale_map = whale_map or {}
@@ -136,6 +198,6 @@ def score_all(
     for c in coins:
         if c.get("quote_vol", 0.0) < min_quote_vol:
             continue
-        out.append(score_coin(c, bias_mode=bias_mode, whale=whale_map.get(c.get("base", ""))))
+        out.append(score_coin(c, bias_mode=bias_mode, whale=whale_map.get(c.get("base", "")), kline_interval=kline_interval))
     out.sort(key=lambda x: x["pump_score"], reverse=True)
     return out[:max_results]

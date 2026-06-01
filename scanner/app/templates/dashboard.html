@@ -28,7 +28,7 @@
       <thead><tr>
         <th>#</th><th>Coin</th><th class="r">Price</th><th class="r">24h%</th>
         <th class="r">Vol surge</th><th class="r">RSI</th><th class="r">Range</th>
-        <th class="r">Score</th><th>Bias</th><th class="r">Target</th><th>Why (TA)</th>
+        <th class="r">Score</th><th>Bias</th><th class="r">Target</th><th class="r">ETA</th><th>Entry zone</th><th>Why (TA)</th>
       </tr></thead>
       <tbody>
       {% for c in coins %}
@@ -43,10 +43,12 @@
           <td class="r"><b class="pump">{{ c.pump_score }}</b></td>
           <td class="{{ 'up' if c.direction=='LONG' else 'dn' if c.direction=='SHORT' else 'muted' }}">{{ c.direction }}</td>
           <td class="r {{ 'up' if c.target_pct>=0 else 'dn' }}">{{ "%+.1f"|format(c.target_pct) }}%</td>
+          <td class="r muted">{{ c.eta }}</td>
+          <td class="muted small">{{ c.entry }}</td>
           <td class="muted small">{{ c.reasons }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="11" class="muted center">No coins yet — first scan may still be running. Hit “Rescan now”.</td></tr>
+        <tr><td colspan="13" class="muted center">No coins yet — first scan may still be running. Hit “Rescan now”.</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -95,7 +97,7 @@
     </section>
   </div>
 
-  <p class="muted small disclaimer">Public-data analytics / screener over Binance-listed USDT spot pairs. “Score” = TA activity (volume surge, momentum, RSI, range, volatility); a tracked whale holding a coin forces score 100 (long). “Target” is an ATR/range-derived estimate, not a guarantee. “Bias” is a directional read, not a recommendation. Not financial advice.</p>
+  <p class="muted small disclaimer">Public-data analytics / screener over Binance-listed USDT spot pairs. “Score” = TA activity (volume surge, momentum, RSI, range, volatility); a tracked whale holding a coin forces score 100 (long). “Target”, “ETA”, and “Entry zone” are ATR/range-derived estimates and reference levels, not guarantees or advice. “Bias” is a directional read. Not financial advice.</p>
 </main>
 
 <script>

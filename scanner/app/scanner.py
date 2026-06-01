@@ -63,6 +63,7 @@ async def run_scan() -> None:
                 max_results=settings.MAX_RESULTS,
                 bias_mode=settings.BIAS_MODE,
                 whale_map=whale_map,
+                kline_interval=settings.KLINE_INTERVAL,
             )
 
         STORE.update(
