@@ -46,6 +46,10 @@ class Settings:
 
     # Hyperliquid whale wallets (optional)
     HL_WHALE_ADDRESSES: list[str] = _csv("HL_WHALE_ADDRESSES", "")
+    # Auto-discover whales from the public leaderboard when none are listed.
+    WHALE_AUTODISCOVER: bool = os.environ.get("WHALE_AUTODISCOVER", "true").lower() == "true"
+    WHALE_TOP_N: int = int(os.environ.get("WHALE_TOP_N", "25"))      # leaderboard wallets to scan
+    WHALE_MIN_USD: float = float(os.environ.get("WHALE_MIN_USD", "250000"))  # min position to count
 
 
 settings = Settings()

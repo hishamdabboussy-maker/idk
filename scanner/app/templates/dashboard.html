@@ -23,27 +23,27 @@
 
 <main>
   <section>
-    <h2>Binance spot radar <span class="muted small">(USDT pairs · sorted by activity score · {{ kline_interval }} surge)</span></h2>
+    <h2>Binance spot radar <span class="muted small">(USDT pairs · sorted by score · {{ kline_interval }} TA · 🐋 = tracked whale holds it)</span></h2>
     <table class="grid">
       <thead><tr>
         <th>#</th><th>Coin</th><th class="r">Price</th><th class="r">24h%</th>
-        <th class="r">24h Vol</th><th class="r">Vol surge</th><th class="r">1h%</th>
-        <th class="r">Range</th><th class="r">Score</th><th>Bias</th><th>Tags</th>
+        <th class="r">Vol surge</th><th class="r">RSI</th><th class="r">Range</th>
+        <th class="r">Score</th><th>Bias</th><th class="r">Target</th><th>Why (TA)</th>
       </tr></thead>
       <tbody>
       {% for c in coins %}
-        <tr>
+        <tr class="{{ 'whale-row' if c.whale else '' }}">
           <td class="muted">{{ loop.index }}</td>
-          <td><a href="https://www.binance.com/en/trade/{{ c.base }}_USDT" target="_blank" rel="noopener">{{ c.base }}</a></td>
+          <td>{{ '🐋 ' if c.whale else '' }}<a href="https://www.binance.com/en/trade/{{ c.base }}_USDT" target="_blank" rel="noopener">{{ c.base }}</a></td>
           <td class="r">${{ "%.6g"|format(c.price) }}</td>
           <td class="r {{ 'up' if c.chg_24h>=0 else 'dn' }}">{{ "%+.1f"|format(c.chg_24h) }}</td>
-          <td class="r">${{ "{:,.0f}".format(c.quote_vol) }}</td>
           <td class="r {{ 'up' if c.vol_surge>=2 else '' }}">{{ "%.1fx"|format(c.vol_surge) }}</td>
-          <td class="r {{ 'up' if c.mom_recent>=0 else 'dn' }}">{{ "%+.1f"|format(c.mom_recent) }}</td>
+          <td class="r {{ 'dn' if c.rsi is not none and c.rsi>=70 else 'up' if c.rsi is not none and c.rsi<=30 else '' }}">{{ "%.0f"|format(c.rsi) if c.rsi is not none else "—" }}</td>
           <td class="r">{{ "%.0f"|format(c.range_pos*100) }}%</td>
           <td class="r"><b class="pump">{{ c.pump_score }}</b></td>
           <td class="{{ 'up' if c.direction=='LONG' else 'dn' if c.direction=='SHORT' else 'muted' }}">{{ c.direction }}</td>
-          <td class="muted small">{{ c.tags }}</td>
+          <td class="r {{ 'up' if c.target_pct>=0 else 'dn' }}">{{ "%+.1f"|format(c.target_pct) }}%</td>
+          <td class="muted small">{{ c.reasons }}</td>
         </tr>
       {% else %}
         <tr><td colspan="11" class="muted center">No coins yet — first scan may still be running. Hit “Rescan now”.</td></tr>
@@ -95,7 +95,7 @@
     </section>
   </div>
 
-  <p class="muted small disclaimer">Public-data analytics / screener over Binance-listed USDT spot pairs. “Score” = unusual activity (volume surge, momentum, range position, volatility); “bias” is a directional read, not a recommendation. Not financial advice.</p>
+  <p class="muted small disclaimer">Public-data analytics / screener over Binance-listed USDT spot pairs. “Score” = TA activity (volume surge, momentum, RSI, range, volatility); a tracked whale holding a coin forces score 100 (long). “Target” is an ATR/range-derived estimate, not a guarantee. “Bias” is a directional read, not a recommendation. Not financial advice.</p>
 </main>
 
 <script>

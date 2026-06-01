@@ -37,19 +37,32 @@ async def run_scan() -> None:
             # 3) enrich shortlist with recent klines (volume surge + momentum)
             await binance.enrich_momentum(client, shortlist, interval=settings.KLINE_INTERVAL)
 
+            # 4) Hyperliquid perp context + whale wallets.
+            #    Use manually-tracked wallets if set, else auto-discover the
+            #    top traders from the public leaderboard.
+            heat = await hyperliquid.perp_heat(client)
+            addrs = settings.HL_WHALE_ADDRESSES
+            if not addrs and settings.WHALE_AUTODISCOVER:
+                addrs = await hyperliquid.top_traders(client, settings.WHALE_TOP_N)
+            whales = await hyperliquid.whale_positions(client, addrs) if addrs else []
+            # only treat sizeable positions as whale signals
+            whales = [w for w in whales if w.get("position_value", 0) >= settings.WHALE_MIN_USD]
+
+            # Build a {coin -> strongest whale position} map so the scorer can
+            # flag/boost coins that tracked whales are actually holding.
+            whale_map: dict[str, dict] = {}
+            for w in whales:
+                coin = w.get("coin", "")
+                cur = whale_map.get(coin)
+                if cur is None or w.get("position_value", 0) > cur.get("position_value", 0):
+                    whale_map[coin] = w
+
             coins = score_all(
                 shortlist,
                 min_quote_vol=settings.MIN_QUOTE_VOL_USD,
                 max_results=settings.MAX_RESULTS,
                 bias_mode=settings.BIAS_MODE,
-            )
-
-            # 4) Hyperliquid perp context + optional whale wallets
-            heat = await hyperliquid.perp_heat(client)
-            whales = (
-                await hyperliquid.whale_positions(client, settings.HL_WHALE_ADDRESSES)
-                if settings.HL_WHALE_ADDRESSES
-                else []
+                whale_map=whale_map,
             )
 
         STORE.update(

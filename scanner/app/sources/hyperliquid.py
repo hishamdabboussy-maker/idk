@@ -9,6 +9,7 @@ feed. Never raises on network errors.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -76,6 +77,7 @@ async def whale_positions(client: httpx.AsyncClient, addresses: list[str]) -> li
             rows.append(
                 {
                     "address": addr[:6] + "…" + addr[-4:],
+                    "full_address": addr,
                     "coin": pos.get("coin", "?"),
                     "side": "LONG" if szi > 0 else "SHORT",
                     "size": abs(szi),
@@ -87,3 +89,33 @@ async def whale_positions(client: httpx.AsyncClient, addresses: list[str]) -> li
             )
     rows.sort(key=lambda x: x["position_value"], reverse=True)
     return rows
+
+
+_LEADERBOARD_URL = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
+_lb_cache: list[str] = []
+_lb_ts: float = 0.0
+_LB_TTL = 1800.0  # refresh top-traders list every 30 min
+
+
+async def top_traders(client: httpx.AsyncClient, top_n: int = 20) -> list[str]:
+    """Auto-discover whale wallets from the public Hyperliquid leaderboard,
+    ranked by account value. Cached. Returns a list of 0x addresses."""
+    global _lb_cache, _lb_ts
+    if _lb_cache and (time.time() - _lb_ts) < _LB_TTL:
+        return _lb_cache[:top_n]
+    try:
+        r = await client.get(_LEADERBOARD_URL, headers={"User-Agent": "whale-scanner/0.3"}, timeout=20.0)
+        r.raise_for_status()
+        rows = (r.json() or {}).get("leaderboardRows") or []
+    except Exception:
+        return _lb_cache[:top_n]
+
+    def acct_val(row: dict) -> float:
+        return _num(row.get("accountValue"))
+
+    rows.sort(key=acct_val, reverse=True)
+    addrs = [row.get("ethAddress") for row in rows if row.get("ethAddress")]
+    if addrs:
+        _lb_cache = addrs
+        _lb_ts = time.time()
+    return _lb_cache[:top_n]

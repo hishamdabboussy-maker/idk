@@ -118,24 +118,61 @@ async def klines(client: httpx.AsyncClient, symbol: str, interval: str = "1h", l
     return data if isinstance(data, list) else []
 
 
-async def enrich_momentum(client: httpx.AsyncClient, rows: list[dict], interval: str = "1h") -> None:
-    """For each row, fetch recent klines and add short-term volume surge + momentum.
+def _rsi(closes: list[float], period: int = 14) -> float | None:
+    """Wilder's RSI on a list of closes."""
+    if len(closes) < period + 1:
+        return None
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    seed = deltas[:period]
+    up = sum(d for d in seed if d > 0) / period
+    down = -sum(d for d in seed if d < 0) / period
+    for d in deltas[period:]:
+        up = (up * (period - 1) + (d if d > 0 else 0.0)) / period
+        down = (down * (period - 1) + (-d if d < 0 else 0.0)) / period
+    if down == 0:
+        return 100.0
+    rs = up / down
+    return 100.0 - 100.0 / (1.0 + rs)
 
-    Adds keys: vol_surge (last candle quote-vol / avg of prior), mom_recent
-    (last candle % move), accel_ok. Mutates rows in place.
-    """
+
+def _atr_pct(ks: list[list], period: int = 14) -> float:
+    """ATR as a % of the last close (volatility proxy)."""
+    if len(ks) < 2:
+        return 0.0
+    trs: list[float] = []
+    for i in range(1, len(ks)):
+        h, l, pc = _num(ks[i][2]), _num(ks[i][3]), _num(ks[i - 1][4])
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    use = trs[-period:] if len(trs) >= period else trs
+    atr = sum(use) / len(use) if use else 0.0
+    last_close = _num(ks[-1][4])
+    return (atr / last_close * 100.0) if last_close > 0 else 0.0
+
+
+async def enrich_momentum(client: httpx.AsyncClient, rows: list[dict], interval: str = "1h") -> None:
+    """Fetch recent klines per symbol and add TA: volume surge, recent momentum,
+    RSI(14), ATR%, and distance from the SMA(20). Mutates rows in place."""
     for r in rows:
-        ks = await klines(client, r["symbol"], interval=interval, limit=24)
+        ks = await klines(client, r["symbol"], interval=interval, limit=50)
         if len(ks) < 4:
             r["vol_surge"] = 0.0
             r["mom_recent"] = 0.0
+            r["rsi"] = None
+            r["atr_pct"] = 0.0
+            r["sma_dist"] = 0.0
             continue
         # kline: [openT, open, high, low, close, volume, closeT, quoteVol, trades, ...]
         quote_vols = [_num(k[7]) for k in ks]
+        closes = [_num(k[4]) for k in ks]
         last_qv = quote_vols[-1]
         prior = quote_vols[:-1]
         avg_qv = sum(prior) / len(prior) if prior else 0.0
         r["vol_surge"] = (last_qv / avg_qv) if avg_qv > 0 else 0.0
         c_open = _num(ks[-1][1])
-        c_close = _num(ks[-1][4])
+        c_close = closes[-1]
         r["mom_recent"] = ((c_close - c_open) / c_open * 100.0) if c_open > 0 else 0.0
+        r["rsi"] = _rsi(closes, 14)
+        r["atr_pct"] = _atr_pct(ks, 14)
+        sma_n = closes[-20:] if len(closes) >= 20 else closes
+        sma = sum(sma_n) / len(sma_n) if sma_n else 0.0
+        r["sma_dist"] = ((c_close - sma) / sma * 100.0) if sma > 0 else 0.0
