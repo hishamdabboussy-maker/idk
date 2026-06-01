@@ -44,7 +44,7 @@ async def run_scan() -> None:
             addrs = settings.HL_WHALE_ADDRESSES
             if not addrs and settings.WHALE_AUTODISCOVER:
                 addrs = await hyperliquid.top_traders(client, settings.WHALE_TOP_N)
-            whales = await hyperliquid.whale_positions(client, addrs) if addrs else []
+            whales = await hyperliquid.whale_positions(client, addrs, recent_days=settings.WHALE_RECENT_DAYS) if addrs else []
             # only treat sizeable positions as whale signals
             whales = [w for w in whales if w.get("position_value", 0) >= settings.WHALE_MIN_USD]
 

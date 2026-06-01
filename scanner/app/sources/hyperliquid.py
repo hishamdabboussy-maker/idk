@@ -62,29 +62,72 @@ async def perp_heat(client: httpx.AsyncClient) -> list[dict]:
     return out
 
 
-async def whale_positions(client: httpx.AsyncClient, addresses: list[str]) -> list[dict]:
-    """Open positions for each tracked wallet."""
+async def _recent_open_times(client: httpx.AsyncClient, addr: str, window_days: float) -> dict[str, int]:
+    """Return {coin -> most-recent OPEN/INCREASE fill time (ms)} within the window.
+
+    Uses userFills; we only count fills that opened or added to a position
+    ('Open Long', 'Open Short', or plain Buy/Sell) so a position the whale has
+    merely been *holding* for weeks won't look recent.
+    """
+    fills = await _post(client, {"type": "userFills", "user": addr})
+    if not isinstance(fills, list):
+        return {}
+    cutoff = (time.time() - window_days * 86400) * 1000.0
+    out: dict[str, int] = {}
+    for f in fills:
+        t = f.get("time", 0)
+        if t < cutoff:
+            continue
+        d = (f.get("dir") or "").lower()
+        # count opens / increases only (skip closes / reduces)
+        if "open" in d or d in ("buy", "sell"):
+            coin = f.get("coin", "")
+            if coin and t > out.get(coin, 0):
+                out[coin] = t
+    return out
+
+
+async def whale_positions(
+    client: httpx.AsyncClient,
+    addresses: list[str],
+    recent_days: float = 0.0,
+) -> list[dict]:
+    """Open positions for each tracked wallet.
+
+    If recent_days > 0, only keep positions the wallet OPENED or ADDED to within
+    that many days (based on userFills), and attach `opened_age_h`. This filters
+    out stale positions the whale has merely been holding.
+    """
     rows: list[dict] = []
     for addr in addresses:
         data = await _post(client, {"type": "clearinghouseState", "user": addr})
         if not isinstance(data, dict):
             continue
+        opens = await _recent_open_times(client, addr, recent_days) if recent_days > 0 else None
         for ap in data.get("assetPositions") or []:
             pos = ap.get("position") or {}
             szi = _num(pos.get("szi"))
             if szi == 0:
                 continue
+            coin = pos.get("coin", "?")
+            age_h = None
+            if opens is not None:
+                t = opens.get(coin)
+                if t is None:
+                    continue  # not opened/added recently -> skip (stale)
+                age_h = (time.time() * 1000.0 - t) / 3_600_000.0
             rows.append(
                 {
                     "address": addr[:6] + "…" + addr[-4:],
                     "full_address": addr,
-                    "coin": pos.get("coin", "?"),
+                    "coin": coin,
                     "side": "LONG" if szi > 0 else "SHORT",
                     "size": abs(szi),
                     "entry_px": _num(pos.get("entryPx")),
                     "position_value": _num(pos.get("positionValue")),
                     "unrealized_pnl": _num(pos.get("unrealizedPnl")),
                     "leverage": (pos.get("leverage") or {}).get("value"),
+                    "opened_age_h": age_h,
                 }
             )
     rows.sort(key=lambda x: x["position_value"], reverse=True)

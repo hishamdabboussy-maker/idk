@@ -50,6 +50,7 @@ class Settings:
     WHALE_AUTODISCOVER: bool = os.environ.get("WHALE_AUTODISCOVER", "true").lower() == "true"
     WHALE_TOP_N: int = int(os.environ.get("WHALE_TOP_N", "25"))      # leaderboard wallets to scan
     WHALE_MIN_USD: float = float(os.environ.get("WHALE_MIN_USD", "250000"))  # min position to count
+    WHALE_RECENT_DAYS: float = float(os.environ.get("WHALE_RECENT_DAYS", "2"))  # only positions opened/added within N days (0=any)
 
 
 settings = Settings()

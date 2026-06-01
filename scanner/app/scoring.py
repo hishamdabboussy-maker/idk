@@ -113,6 +113,7 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None)
             f"🐋 whale {side} {whale.get('address','')} "
             f"${whale.get('position_value',0):,.0f}"
             + (f" @ {whale.get('leverage')}x" if whale.get('leverage') else "")
+            + (f" · opened {whale['opened_age_h']:.0f}h ago" if whale.get("opened_age_h") is not None else "")
         )
         out["reasons"] = ", ".join([whale_reason] + reasons) if reasons else whale_reason
         return out
