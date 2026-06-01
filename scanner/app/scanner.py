@@ -57,6 +57,16 @@ async def run_scan() -> None:
                 if cur is None or w.get("position_value", 0) > cur.get("position_value", 0):
                     whale_map[coin] = w
 
+            fa = {
+                "account": settings.ACCOUNT_SIZE_USD,
+                "risk_pct": settings.RISK_PER_TRADE_PCT,
+                "max_daily": settings.MAX_DAILY_LOSS_PCT,
+                "max_dd": settings.MAX_TOTAL_DD_PCT,
+                "max_lev": settings.MAX_LEVERAGE,
+                "min_rr": settings.MIN_RR,
+                "max_hold": settings.MAX_HOLD_HOURS,
+            }
+
             coins = score_all(
                 shortlist,
                 min_quote_vol=settings.MIN_QUOTE_VOL_USD,
@@ -64,6 +74,7 @@ async def run_scan() -> None:
                 bias_mode=settings.BIAS_MODE,
                 whale_map=whale_map,
                 kline_interval=settings.KLINE_INTERVAL,
+                fa=fa,
             )
 
         STORE.update(

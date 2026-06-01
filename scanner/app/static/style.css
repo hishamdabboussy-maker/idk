@@ -36,3 +36,14 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
 .whale-row{background:rgba(245,179,1,.10)}
 .whale-row:hover{background:rgba(245,179,1,.18)}
 .whale-row td:nth-child(2){font-weight:700;color:var(--accent)}
+
+.banner.fa{background:#10233a;color:#cfe3ff;border-bottom:1px solid var(--line)}
+.banner.fa b{color:#fff}
+.filterbar{margin-bottom:8px;font-size:13px}
+.filterbar label{cursor:pointer;color:var(--muted)}
+.fitbadge{font-size:10px}
+.fitbadge.good{background:#0f3d24;color:#5ee29a}
+.fitbadge.tight{background:#3d3413;color:#f5d36b}
+.fitbadge.skip{background:#3d1717;color:#ff8a8a}
+tr.fit-skip{opacity:.5}
+tr.fit-good td:nth-child(6) .pump{color:#5ee29a}

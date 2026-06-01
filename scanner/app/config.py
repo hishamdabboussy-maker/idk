@@ -44,6 +44,16 @@ class Settings:
     # "momentum" (near high+rising=LONG / near low+falling=SHORT).
     BIAS_MODE: str = os.environ.get("BIAS_MODE", "reversion").strip().lower()
 
+    # --- Funded / prop account risk model -------------------------------------
+    # The scanner sizes each idea against these so it respects challenge rules.
+    ACCOUNT_SIZE_USD: float = float(os.environ.get("ACCOUNT_SIZE_USD", "100000"))
+    RISK_PER_TRADE_PCT: float = float(os.environ.get("RISK_PER_TRADE_PCT", "0.5"))  # % of account risked per trade
+    MAX_DAILY_LOSS_PCT: float = float(os.environ.get("MAX_DAILY_LOSS_PCT", "4"))    # prop daily loss limit
+    MAX_TOTAL_DD_PCT: float = float(os.environ.get("MAX_TOTAL_DD_PCT", "8"))        # prop max drawdown
+    MAX_LEVERAGE: float = float(os.environ.get("MAX_LEVERAGE", "5"))                # firm leverage cap
+    MIN_RR: float = float(os.environ.get("MIN_RR", "1.5"))                          # reject setups below this R:R
+    MAX_HOLD_HOURS: float = float(os.environ.get("MAX_HOLD_HOURS", "0"))            # flag holds longer than this (0=off; e.g. news/overnight rules)
+
     # Hyperliquid whale wallets (optional)
     HL_WHALE_ADDRESSES: list[str] = _csv("HL_WHALE_ADDRESSES", "")
     # Auto-discover whales from the public leaderboard when none are listed.

@@ -80,6 +80,14 @@ async def dashboard(request: Request):
             "min_vol": settings.MIN_QUOTE_VOL_USD,
             "kline_interval": settings.KLINE_INTERVAL,
             "bias_mode": settings.BIAS_MODE,
+            "fa": {
+                "account": settings.ACCOUNT_SIZE_USD,
+                "risk_pct": settings.RISK_PER_TRADE_PCT,
+                "max_daily": settings.MAX_DAILY_LOSS_PCT,
+                "max_dd": settings.MAX_TOTAL_DD_PCT,
+                "max_lev": settings.MAX_LEVERAGE,
+                "min_rr": settings.MIN_RR,
+            },
         },
     )
 

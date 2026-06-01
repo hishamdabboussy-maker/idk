@@ -8,47 +8,63 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">🐋 Pump / Whale Scanner</div>
+  <div class="brand">🐋 Funded Trade Scanner</div>
   <div class="status">
     {% if scanning %}<span class="dot live"></span> scanning…{% else %}
       <span class="dot ok"></span>
       updated {{ updated_age if updated_age is not none else "—" }}s ago{% endif %}
-    · refresh {{ interval }}s · Binance USDT spot · bias: {{ bias_mode }} · min 24h vol ${{ "{:,.0f}".format(min_vol) }}
+    · refresh {{ interval }}s · Binance USDT · bias: {{ bias_mode }}
     <button id="rescan">Rescan now</button>
     <a class="logout" href="/logout">Logout</a>
   </div>
 </header>
 
+<div class="banner fa">
+  Funded model: <b>${{ "{:,.0f}".format(fa.account) }}</b> acct ·
+  risk <b>{{ fa.risk_pct }}%</b>/trade (${{ "{:,.0f}".format(fa.account * fa.risk_pct / 100) }}) ·
+  daily loss limit <b>{{ fa.max_daily }}%</b> · max DD <b>{{ fa.max_dd }}%</b> ·
+  max lev <b>{{ fa.max_lev }}x</b> · min R:R <b>{{ fa.min_rr }}</b>
+  <span class="muted">— set via env (ACCOUNT_SIZE_USD, RISK_PER_TRADE_PCT, MAX_DAILY_LOSS_PCT, MAX_LEVERAGE, MIN_RR)</span>
+</div>
+
 {% if error %}<div class="banner err">last scan error: {{ error }}</div>{% endif %}
 
 <main>
   <section>
-    <h2>Binance spot radar <span class="muted small">(USDT pairs · sorted by score · {{ kline_interval }} TA · 🐋 = tracked whale holds it)</span></h2>
-    <table class="grid">
+    <div class="filterbar">
+      <label><input type="checkbox" id="fitonly"> Show only funded-fit setups (hide SKIP)</label>
+    </div>
+    <h2>Binance spot radar <span class="muted small">(sorted by score · {{ kline_interval }} TA · 🐋 = recent whale · risk sized to your funded rules)</span></h2>
+    <table class="grid" id="radar">
       <thead><tr>
         <th>#</th><th>Coin</th><th class="r">Price</th><th class="r">24h%</th>
-        <th class="r">Vol surge</th><th class="r">RSI</th><th class="r">Range</th>
-        <th class="r">Score</th><th>Bias</th><th class="r">Target</th><th class="r">ETA</th><th>Entry zone</th><th>Why (TA)</th>
+        <th class="r">RSI</th><th class="r">Score</th><th>Bias</th>
+        <th class="r">Entry</th><th class="r">Stop</th><th class="r">Target</th>
+        <th class="r">R:R</th><th class="r">Size</th><th class="r">Lev</th>
+        <th class="r">ETA</th><th>Fit</th><th>Why (TA)</th>
       </tr></thead>
       <tbody>
       {% for c in coins %}
-        <tr class="{{ 'whale-row' if c.whale else '' }}">
+        <tr class="{{ 'whale-row' if c.whale else '' }} fit-{{ (c.fit or '—')|lower }}">
           <td class="muted">{{ loop.index }}</td>
           <td>{{ '🐋 ' if c.whale else '' }}<a href="https://www.binance.com/en/trade/{{ c.base }}_USDT" target="_blank" rel="noopener">{{ c.base }}</a></td>
           <td class="r">${{ "%.6g"|format(c.price) }}</td>
           <td class="r {{ 'up' if c.chg_24h>=0 else 'dn' }}">{{ "%+.1f"|format(c.chg_24h) }}</td>
-          <td class="r {{ 'up' if c.vol_surge>=2 else '' }}">{{ "%.1fx"|format(c.vol_surge) }}</td>
           <td class="r {{ 'dn' if c.rsi is not none and c.rsi>=70 else 'up' if c.rsi is not none and c.rsi<=30 else '' }}">{{ "%.0f"|format(c.rsi) if c.rsi is not none else "—" }}</td>
-          <td class="r">{{ "%.0f"|format(c.range_pos*100) }}%</td>
           <td class="r"><b class="pump">{{ c.pump_score }}</b></td>
           <td class="{{ 'up' if c.direction=='LONG' else 'dn' if c.direction=='SHORT' else 'muted' }}">{{ c.direction }}</td>
-          <td class="r {{ 'up' if c.target_pct>=0 else 'dn' }}">{{ "%+.1f"|format(c.target_pct) }}%</td>
+          <td class="r">${{ "%.6g"|format(c.price) }}</td>
+          <td class="r dn">{{ ("$%.6g"|format(c.stop_price)) if c.stop_price else "—" }}{% if c.stop_pct is not none %} <span class="muted small">{{ "%+.1f"|format(c.stop_pct) }}%</span>{% endif %}</td>
+          <td class="r {{ 'up' if c.target_pct>=0 else 'dn' }}">${{ "%.6g"|format(c.target_price) }} <span class="muted small">{{ "%+.1f"|format(c.target_pct) }}%</span></td>
+          <td class="r {{ 'up' if c.rr is not none and c.rr>=fa.min_rr else 'dn' }}">{{ ("%.2f"|format(c.rr)) if c.rr is not none else "—" }}</td>
+          <td class="r">{{ ("$" + "{:,.0f}".format(c.size_usd)) if c.size_usd else "—" }}</td>
+          <td class="r {{ 'dn' if c.lev_needed is not none and c.lev_needed>=fa.max_lev else '' }}">{{ ("%.1fx"|format(c.lev_needed)) if c.lev_needed is not none else "—" }}</td>
           <td class="r muted">{{ c.eta }}</td>
-          <td class="muted small">{{ c.entry }}</td>
+          <td><span class="badge fitbadge {{ (c.fit or '—')|lower }}">{{ c.fit }}</span> <span class="muted small">{{ c.fit_reason }}</span></td>
           <td class="muted small">{{ c.reasons }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="13" class="muted center">No coins yet — first scan may still be running. Hit “Rescan now”.</td></tr>
+        <tr><td colspan="16" class="muted center">No coins yet — first scan may still be running. Hit “Rescan now”.</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -105,6 +121,12 @@ document.getElementById('rescan').addEventListener('click', async (e) => {
   e.target.disabled = true; e.target.textContent = 'scanning…';
   try { await fetch('/api/rescan', {method:'POST'}); } catch (_) {}
   setTimeout(() => location.reload(), 4000);
+});
+const fitOnly = document.getElementById('fitonly');
+if (fitOnly) fitOnly.addEventListener('change', () => {
+  document.querySelectorAll('#radar tbody tr.fit-skip').forEach(r => {
+    r.style.display = fitOnly.checked ? 'none' : '';
+  });
 });
 </script>
 </body>

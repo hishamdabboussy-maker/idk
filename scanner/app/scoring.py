@@ -33,6 +33,15 @@ def _target(c: dict, direction: str) -> tuple[float, float]:
     return base, price * (1 + base / 100.0)
 
 
+def _eta_hours(c: dict, target_pct: float) -> float | None:
+    """Numeric time-to-target in hours (per-candle ATR velocity, 1 candle≈the
+    enrich interval; we approximate using ATR% as hourly velocity)."""
+    atr_pct = c.get("atr_pct", 0.0) or 0.0
+    if atr_pct <= 0:
+        return None
+    return abs(target_pct) / atr_pct  # bars; treated as hours for 1h scans
+
+
 def _eta(c: dict, target_pct: float, kline_interval: str = "1h") -> str:
     """Rough time-to-target estimate.
 
@@ -90,7 +99,82 @@ def _fmt(x: float) -> str:
     return f"{x:.6g}"
 
 
-def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None, kline_interval: str = "1h") -> dict:
+def _funded(c: dict, direction: str, target_pct: float, eta_hours: float | None, fa: dict) -> dict:
+    """Funded / prop-account risk model for one idea.
+
+    Computes an ATR-based invalidation (stop) distance, R:R vs the target,
+    a position size that risks only RISK_PER_TRADE_PCT of the account, the
+    leverage that size implies, what % of the daily-loss budget the trade uses,
+    and a FIT verdict against the firm's rules. Reference math, not advice.
+    """
+    price = c.get("price", 0.0)
+    atr_pct = c.get("atr_pct", 0.0) or 0.0
+    if price <= 0 or atr_pct <= 0 or direction == "—":
+        return {
+            "stop_pct": None, "stop_price": None, "rr": None,
+            "size_usd": None, "lev_needed": None, "daily_budget_pct": None,
+            "fit": "—", "fit_reason": "no clean stop",
+        }
+
+    # Invalidation = 1.2x ATR beyond entry (typical structural stop distance),
+    # floored at 0.8% so ultra-low-vol coins don't produce an unrealistically
+    # tight stop and inflated R:R.
+    stop_pct = max(atr_pct * 1.2, 0.8)
+    reward = abs(target_pct)
+    rr = reward / stop_pct if stop_pct > 0 else 0.0
+
+    if direction == "LONG":
+        stop_price = price * (1 - stop_pct / 100.0)
+    else:
+        stop_price = price * (1 + stop_pct / 100.0)
+
+    # Risk budget in $: risk_per_trade% of account. Position notional so that a
+    # stop-out loses exactly that budget => notional = risk$ / stop_fraction.
+    risk_usd = fa["account"] * fa["risk_pct"] / 100.0
+    notional = risk_usd / (stop_pct / 100.0) if stop_pct > 0 else 0.0
+    lev_needed = notional / fa["account"] if fa["account"] > 0 else 0.0
+    # Cap notional to the firm's max leverage.
+    capped = False
+    if lev_needed > fa["max_lev"]:
+        notional = fa["account"] * fa["max_lev"]
+        lev_needed = fa["max_lev"]
+        capped = True
+    # How much of the daily-loss budget a single stop-out consumes.
+    daily_loss_usd = fa["account"] * fa["max_daily"] / 100.0
+    daily_budget_pct = (risk_usd / daily_loss_usd * 100.0) if daily_loss_usd > 0 else 0.0
+
+    # FIT verdict
+    reasons: list[str] = []
+    fit = "GOOD"
+    if rr < fa["min_rr"]:
+        fit = "SKIP"
+        reasons.append(f"R:R {rr:.1f} < {fa['min_rr']:.1f}")
+    if capped:
+        if fit != "SKIP":
+            fit = "TIGHT"
+        reasons.append(f"needs >{fa['max_lev']:.0f}x (capped)")
+    if fa["max_hold"] > 0 and eta_hours is not None and eta_hours > fa["max_hold"]:
+        if fit == "GOOD":
+            fit = "TIGHT"
+        reasons.append(f"ETA > {fa['max_hold']:.0f}h hold limit")
+    if stop_pct >= fa["max_daily"]:
+        # a single stop near/over the daily limit is dangerous on a funded acct
+        fit = "SKIP"
+        reasons.append(f"stop {stop_pct:.1f}% ≈ daily limit")
+
+    return {
+        "stop_pct": round(-stop_pct if direction == "LONG" else stop_pct, 1),
+        "stop_price": stop_price,
+        "rr": round(rr, 2),
+        "size_usd": round(notional),
+        "lev_needed": round(lev_needed, 1),
+        "daily_budget_pct": round(daily_budget_pct, 1),
+        "fit": fit,
+        "fit_reason": ", ".join(reasons) if reasons else f"risks {fa['risk_pct']:.1f}% for {rr:.1f}R",
+    }
+
+
+def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None, kline_interval: str = "1h", fa: dict | None = None) -> dict:
     rp = c.get("range_pos", 0.5)
     mom_recent = c.get("mom_recent", 0.0)
     rsi = c.get("rsi")
@@ -142,6 +226,7 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None,
         reasons.append(f"already {c['chg_24h']:+.0f}% 24h")
 
     target_pct, target_price = _target(c, direction if direction != "—" else "LONG")
+    eta_h = _eta_hours(c, target_pct)
 
     out = {
         **c,
@@ -157,6 +242,8 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None,
         "entry": _entries(c, direction),
         "whale": False,
     }
+    if fa:
+        out.update(_funded(c, direction, target_pct, eta_h, fa))
 
     # --- whale override ------------------------------------------------------
     # A tracked Hyperliquid whale holding this coin is the strongest signal we
@@ -170,6 +257,8 @@ def score_coin(c: dict, bias_mode: str = "reversion", whale: dict | None = None,
         out["target_pct"], out["target_price"] = round(tp, 1), tpx
         out["eta"] = _eta(c, tp, kline_interval)
         out["entry"] = _entries(c, side)
+        if fa:
+            out.update(_funded(c, side, tp, _eta_hours(c, tp), fa))
         whale_reason = (
             f"🐋 whale {side} {whale.get('address','')} "
             f"${whale.get('position_value',0):,.0f}"
@@ -191,13 +280,16 @@ def score_all(
     bias_mode: str = "reversion",
     whale_map: dict[str, dict] | None = None,
     kline_interval: str = "1h",
+    fa: dict | None = None,
 ) -> list[dict]:
-    """whale_map: {BASE_SYMBOL -> whale position dict} for tracked wallets."""
+    """whale_map: {BASE_SYMBOL -> whale position dict} for tracked wallets.
+    fa: funded-account params (account, risk_pct, max_daily, max_lev, min_rr,
+    max_hold) — when provided, each coin gets stop/R:R/size/leverage/fit."""
     whale_map = whale_map or {}
     out: list[dict] = []
     for c in coins:
         if c.get("quote_vol", 0.0) < min_quote_vol:
             continue
-        out.append(score_coin(c, bias_mode=bias_mode, whale=whale_map.get(c.get("base", "")), kline_interval=kline_interval))
+        out.append(score_coin(c, bias_mode=bias_mode, whale=whale_map.get(c.get("base", "")), kline_interval=kline_interval, fa=fa))
     out.sort(key=lambda x: x["pump_score"], reverse=True)
     return out[:max_results]
